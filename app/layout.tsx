@@ -16,7 +16,7 @@ const bodyFont = Google_Sans({
 
 export const metadata: Metadata = {
   title: "SDrive",
-  description: "An editorial personal archive frontend with mock S3 data.",
+  description: "An editorial personal archive frontend connected to a Go and MinIO backend.",
 };
 
 export default function RootLayout({

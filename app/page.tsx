@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation";
+import { getCurrentUser } from "@/lib/services/auth-service";
 
-export default function HomePage() {
-  redirect("/archive/my-archive");
+export default async function HomePage() {
+  const user = await getCurrentUser();
+  redirect(user ? `/archive/${user.bucket}` : "/login");
 }

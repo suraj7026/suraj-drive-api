@@ -16,9 +16,10 @@ jwt:
   expiry_hrs: 24
 
 minio:
-  endpoint: "localhost:9000"
+  endpoint: "s3.sudarshanrajagopalan.one"
+  public_endpoint: "s3.sudarshanrajagopalan.one"
   access_key: "replace-with-minio-access-key"
   secret_key: "replace-with-minio-secret-key"
   bucket_prefix: "drive"
-  use_ssl: false
+  use_ssl: true
   region: "us-east-1"

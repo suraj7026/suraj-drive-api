@@ -73,5 +73,12 @@ func bucketFromRequest(r *http.Request, store *storage.MinIOClient) (string, err
 	if claims == nil {
 		return "", fmt.Errorf("missing auth claims")
 	}
-	return store.BucketNameForSubject(claims.Subject)
+	bucket, err := store.BucketNameForSubject(claims.Subject)
+	if err != nil {
+		return "", err
+	}
+	if err := store.EnsureBucket(r.Context(), bucket); err != nil {
+		return "", fmt.Errorf("failed to provision user bucket: %w", err)
+	}
+	return bucket, nil
 }

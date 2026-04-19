@@ -28,26 +28,45 @@ var (
 )
 
 type MinIOClient struct {
-	client       *minio.Client
-	bucketPrefix string
-	region       string
+	client        *minio.Client
+	presignClient *minio.Client
+	bucketPrefix  string
+	region        string
 }
 
 func NewMinIOClient(cfg *config.Config) (*MinIOClient, error) {
-	client, err := minio.New(cfg.MinIO.Endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(cfg.MinIO.AccessKey, cfg.MinIO.SecretKey, ""),
-		Secure: cfg.MinIO.UseSSL,
-		Region: cfg.MinIO.Region,
-	})
+	client, err := newClient(cfg.MinIO.Endpoint, cfg)
 	if err != nil {
 		return nil, err
 	}
 
+	presignEndpoint := strings.TrimSpace(cfg.MinIO.PublicEndpoint)
+	if presignEndpoint == "" {
+		presignEndpoint = cfg.MinIO.Endpoint
+	}
+
+	presignClient := client
+	if presignEndpoint != cfg.MinIO.Endpoint {
+		presignClient, err = newClient(presignEndpoint, cfg)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return &MinIOClient{
-		client:       client,
-		bucketPrefix: strings.Trim(strings.ToLower(cfg.MinIO.BucketPrefix), "-"),
-		region:       cfg.MinIO.Region,
+		client:        client,
+		presignClient: presignClient,
+		bucketPrefix:  strings.Trim(strings.ToLower(cfg.MinIO.BucketPrefix), "-"),
+		region:        cfg.MinIO.Region,
 	}, nil
+}
+
+func newClient(endpoint string, cfg *config.Config) (*minio.Client, error) {
+	return minio.New(endpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4(cfg.MinIO.AccessKey, cfg.MinIO.SecretKey, ""),
+		Secure: cfg.MinIO.UseSSL,
+		Region: cfg.MinIO.Region,
+	})
 }
 
 func (m *MinIOClient) BucketNameForSubject(subject string) (string, error) {
@@ -255,7 +274,7 @@ func (m *MinIOClient) PresignedGetURL(ctx context.Context, bucket, key string, t
 		return "", ErrObjectNotFound
 	}
 
-	urlValue, err := m.client.PresignedGetObject(ctx, bucket, normalizedKey, ttl, url.Values{})
+	urlValue, err := m.presignClient.PresignedGetObject(ctx, bucket, normalizedKey, ttl, url.Values{})
 	if err != nil {
 		return "", err
 	}
@@ -268,7 +287,7 @@ func (m *MinIOClient) PresignedPutURL(ctx context.Context, bucket, key string, t
 		return "", err
 	}
 
-	urlValue, err := m.client.PresignedPutObject(ctx, bucket, normalizedKey, ttl)
+	urlValue, err := m.presignClient.PresignedPutObject(ctx, bucket, normalizedKey, ttl)
 	if err != nil {
 		return "", err
 	}

@@ -1,6 +1,14 @@
 import { FolderOpen, History, Shield, Star, Upload, Users } from "lucide-react";
 
-export const navItems = [
+type NavItem = {
+  href: string;
+  label: string;
+  icon: typeof FolderOpen;
+  match: (pathname: string) => boolean;
+  badge?: string;
+};
+
+export const navItems: NavItem[] = [
   {
     href: "/archive/my-archive",
     label: "My Archive",
@@ -35,7 +43,6 @@ export const navItems = [
     href: "/upload",
     label: "Upload",
     icon: Upload,
-    badge: "3",
     match: (pathname: string) => pathname.startsWith("/upload"),
   },
 ];

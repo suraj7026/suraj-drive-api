@@ -11,13 +11,13 @@ export default function NotFound() {
           This part of the archive does not exist.
         </h1>
         <p className="mt-4 max-w-md text-[15px] leading-7 text-[var(--color-text-muted)]">
-          The bucket or path you opened is not available in the current mock archive.
+          The bucket or path you opened is not available for your current authenticated archive.
         </p>
         <Link
-          href="/archive/my-archive"
+          href="/"
           className="primary-gradient mt-8 inline-flex rounded-full px-5 py-3 text-sm font-semibold text-white"
         >
-          Return to My Archive
+          Return to Archive
         </Link>
       </div>
     </main>

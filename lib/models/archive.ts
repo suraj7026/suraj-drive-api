@@ -1,3 +1,4 @@
+import type { CurrentUser } from "@/lib/models/auth";
 import type { TransferItem } from "@/lib/models/transfers";
 
 export type SectionKey = "archive" | "shared" | "recents" | "starred" | "vault";
@@ -29,7 +30,7 @@ export type FileItem = {
   slug: string;
   path: string[];
   owner: string;
-  updatedAt: string;
+  updatedAt?: string;
   sizeBytes?: number;
   tags?: string[];
   shared?: boolean;
@@ -38,6 +39,7 @@ export type FileItem = {
 };
 
 export type ArchiveContext = {
+  user: CurrentUser;
   section: SectionKey;
   eyebrow: string;
   heading: string;
@@ -49,4 +51,5 @@ export type ArchiveContext = {
   items: FileItem[];
   defaultSelectedId: string | null;
   transferQueue: TransferItem[];
+  emptyStateMessage?: string;
 };

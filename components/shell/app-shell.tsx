@@ -1,30 +1,56 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { type ReactNode, useMemo, useState, useTransition } from "react";
 import { Bell, HelpCircle, Menu, Search, Settings2, Sparkles } from "lucide-react";
+import { clientApiFetch } from "@/lib/api/client";
 import { cn } from "@/lib/utils/cn";
 import { navItems } from "@/lib/theme/navigation";
+import type { CurrentUser } from "@/lib/models/auth";
 
 type AppShellProps = {
+  user: CurrentUser;
   title: string;
   eyebrow?: string;
   children: ReactNode;
   detail?: ReactNode;
   transferDrawer?: ReactNode;
   headerAction?: ReactNode;
+  newObjectHref?: string;
 };
 
 export function AppShell({
+  user,
   title,
   eyebrow = "The Archive",
   children,
   detail,
   transferDrawer,
   headerAction,
+  newObjectHref = "/upload",
 }: AppShellProps) {
   const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+  const [isLoggingOut, startLogoutTransition] = useTransition();
+  const searchQuery = searchParams.get("q") ?? "";
+  const userInitials = useMemo(() => initialsFromName(user.name), [user.name]);
+
+  async function handleLogout() {
+    setLogoutError(null);
+
+    try {
+      await clientApiFetch("/api/auth/logout", { method: "POST" });
+      startLogoutTransition(() => {
+        router.push("/login");
+        router.refresh();
+      });
+    } catch (error) {
+      setLogoutError(error instanceof Error ? error.message : "Failed to sign out.");
+    }
+  }
 
   return (
     <div className="archive-shell min-h-screen">
@@ -41,9 +67,12 @@ export function AppShell({
               </div>
             </div>
 
-            <button className="primary-gradient flex w-full items-center justify-center rounded-full px-4 py-3 text-sm font-semibold text-white shadow-[0_16px_36px_rgba(0,95,184,0.22)]">
+            <Link
+              href={newObjectHref}
+              className="primary-gradient flex w-full items-center justify-center rounded-full px-4 py-3 text-sm font-semibold text-white shadow-[0_16px_36px_rgba(0,95,184,0.22)]"
+            >
               New Object
-            </button>
+            </Link>
           </div>
 
           <nav className="mt-10 flex-1 space-y-2">
@@ -80,30 +109,31 @@ export function AppShell({
             <p className="text-xs uppercase tracking-[0.26em] text-[var(--color-text-soft)]">Personal Mode</p>
             <p className="font-heading mt-3 text-xl font-semibold leading-8">A private archive built for one careful curator.</p>
             <p className="mt-3 text-sm leading-6 text-[var(--color-text-muted)]">
-              SDrive stays quiet, precise, and easy to scan.
+              Live data is now loaded from your Go API-backed bucket.
             </p>
           </div>
 
           <div className="mt-4 rounded-[24px] bg-[var(--color-surface-strong)] px-4 py-5 shadow-[0_12px_32px_rgba(26,28,25,0.05)]">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-xs uppercase tracking-[0.26em] text-[var(--color-text-soft)]">Storage</p>
-                <p className="mt-2 text-sm text-[var(--color-text-muted)]">128 GB of 512 GB used</p>
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-full bg-[var(--color-surface-low)] text-sm font-semibold text-[var(--color-primary)]">
+                {userInitials}
               </div>
-              <p className="font-heading text-lg font-semibold text-[var(--color-primary)]">25%</p>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-[var(--color-text)]">{user.name}</p>
+                <p className="truncate text-xs text-[var(--color-text-soft)]">{user.email}</p>
+              </div>
             </div>
 
-            <div className="mt-4 h-2.5 rounded-full bg-[var(--color-surface-low)]">
-              <div
-                aria-hidden="true"
-                className="primary-gradient h-2.5 rounded-full"
-                style={{ width: "25%" }}
-              />
-            </div>
+            <button
+              type="button"
+              onClick={handleLogout}
+              disabled={isLoggingOut}
+              className="mt-4 w-full rounded-full bg-[var(--color-surface-low)] px-4 py-3 text-sm font-medium text-[var(--color-text)] transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isLoggingOut ? "Signing out..." : "Sign out"}
+            </button>
 
-            <p className="mt-3 text-xs leading-5 text-[var(--color-text-soft)]">
-              384 GB still available for your archive.
-            </p>
+            {logoutError ? <p className="mt-3 text-xs text-red-600">{logoutError}</p> : null}
           </div>
         </aside>
 
@@ -123,14 +153,17 @@ export function AppShell({
               </div>
 
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                <div className="flex min-w-0 flex-1 items-center gap-3 rounded-full bg-[var(--color-surface-low)] px-4 py-3 shadow-[inset_0_0_0_1px_var(--color-outline)] sm:min-w-[320px]">
+                <form action="/search" method="get" className="flex min-w-0 flex-1 items-center gap-3 rounded-full bg-[var(--color-surface-low)] px-4 py-3 shadow-[inset_0_0_0_1px_var(--color-outline)] sm:min-w-[320px]">
                   <Search size={18} className="text-[var(--color-text-soft)]" />
                   <input
+                    key={searchQuery}
+                    name="q"
                     aria-label="Search archive"
+                    defaultValue={searchQuery}
                     placeholder="Search by object, folder, or note"
                     className="w-full bg-transparent text-sm outline-none placeholder:text-[var(--color-text-soft)]"
                   />
-                </div>
+                </form>
 
                 <div className="flex items-center gap-2">
                   {headerAction}
@@ -169,10 +202,20 @@ function ToolbarButton({
 }) {
   return (
     <button
+      type="button"
       aria-label={label}
       className="flex h-11 w-11 items-center justify-center rounded-full bg-[var(--color-surface-strong)] text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text)]"
     >
       <Icon size={18} />
     </button>
   );
+}
+
+function initialsFromName(name: string) {
+  const segments = name.trim().split(/\s+/).filter(Boolean).slice(0, 2);
+  if (segments.length === 0) {
+    return "SD";
+  }
+
+  return segments.map((segment) => segment[0]?.toUpperCase() ?? "").join("");
 }

@@ -1,16 +1,21 @@
-import { transfers } from "@/lib/mock-data/archive";
+import { formatBytes } from "@/lib/utils/format";
 import type { UploadScreenData } from "@/lib/models/transfers";
-import { delay } from "@/lib/utils/delay";
+import { requireCurrentUser } from "@/lib/services/auth-service";
 
-export async function getUploadScreenData(): Promise<UploadScreenData> {
-  await delay(40);
+export async function getUploadScreenData(prefix = ""): Promise<UploadScreenData> {
+  const user = await requireCurrentUser();
+  const targetPrefix = prefix.trim().replace(/^\/+|\/+$/g, "");
+  const targetLabel = targetPrefix ? `My Archive / ${targetPrefix}` : "My Archive";
 
   return {
+    user,
+    targetLabel,
+    targetPrefix,
     summary: [
-      { label: "Queue Depth", value: "3 Items" },
-      { label: "Destination", value: "My Archive" },
-      { label: "Largest File", value: "1.2 GB" },
+      { label: "Queue Depth", value: "0 Items" },
+      { label: "Destination", value: targetLabel },
+      { label: "Largest File", value: formatBytes(0) },
     ],
-    transfers,
+    transfers: [],
   };
 }

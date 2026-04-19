@@ -1,16 +1,4 @@
 services:
-  minio:
-    image: minio/minio
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
-    command: server /data --console-address ":9001"
-    volumes:
-      - minio_data:/data
-
   backend:
     build: .
     environment:
@@ -19,16 +7,13 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-replace-with-google-client-secret}
       GOOGLE_REDIRECT_URL: ${GOOGLE_REDIRECT_URL:-http://localhost:4001/api/auth/google/callback}
       JWT_SECRET: ${JWT_SECRET:-replace-with-a-strong-random-secret}
-      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
-      MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-s3.sudarshanrajagopalan.one}
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-s3.sudarshanrajagopalan.one}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-replace-with-minio-access-key}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-replace-with-minio-secret-key}
+      MINIO_USE_SSL: ${MINIO_USE_SSL:-true}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
     ports:
       - "4001:4001"
-    depends_on:
-      - minio
     volumes:
       - ./config.yaml:/app/config.yaml
-
-volumes:
-  minio_data:

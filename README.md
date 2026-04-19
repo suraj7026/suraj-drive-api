@@ -1,36 +1,61 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# SDrive Frontend
 
-## Getting Started
+Next.js 16 frontend for the SDrive archive UI. It now connects to the Go backend for:
 
-First, run the development server:
+- Google login and session lookup
+- Bucket browsing
+- Search
+- Folder creation
+- File upload via presigned URLs
+- File download via presigned URLs
+- File copy and delete
+
+## Local Setup
+
+1. Start the Go backend from `backend/`.
+2. Create `./.env.local` in the frontend root with:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+NEXT_PUBLIC_API_URL=http://localhost:4001
 ```
 
-Open [http://localhost:4000](http://localhost:4000) with your browser to see the result.
+3. Start the frontend:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm install
+npm run dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The frontend runs on [http://localhost:4000](http://localhost:4000).
 
-## Learn More
+## Backend Storage Setup
 
-To learn more about Next.js, take a look at the following resources:
+The backend is configured to use a remote MinIO host by default:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- S3 API: `https://s3.sudarshanrajagopalan.one`
+- Console: `https://console.sudarshanrajagopalan.one`
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Relevant backend env vars:
 
-## Deploy on Vercel
+```bash
+MINIO_ENDPOINT=s3.sudarshanrajagopalan.one
+MINIO_PUBLIC_ENDPOINT=s3.sudarshanrajagopalan.one
+MINIO_USE_SSL=true
+MINIO_REGION=us-east-1
+MINIO_ACCESS_KEY=...
+MINIO_SECRET_KEY=...
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Notes
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- The backend must allow `http://localhost:4000` in its CORS config.
+- The backend no longer depends on a local MinIO Docker service.
+- Shared, recents, starred, and vault screens remain placeholder views until the Go backend exposes metadata or dedicated endpoints for them.
+- Root archive routes resolve against the authenticated user bucket returned by `GET /api/auth/me`.
+
+## Verification
+
+```bash
+npm run lint
+npm run build
+```

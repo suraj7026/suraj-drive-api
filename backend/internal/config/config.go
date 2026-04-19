@@ -28,6 +28,7 @@ type Config struct {
 	} `mapstructure:"jwt"`
 	MinIO struct {
 		Endpoint     string `mapstructure:"endpoint"`
+		PublicEndpoint string `mapstructure:"public_endpoint"`
 		AccessKey    string `mapstructure:"access_key"`
 		SecretKey    string `mapstructure:"secret_key"`
 		BucketPrefix string `mapstructure:"bucket_prefix"`
@@ -87,6 +88,7 @@ func bindEnvKeys() error {
 		"jwt.secret",
 		"jwt.expiry_hrs",
 		"minio.endpoint",
+		"minio.public_endpoint",
 		"minio.access_key",
 		"minio.secret_key",
 		"minio.bucket_prefix",
