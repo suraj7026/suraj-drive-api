@@ -152,7 +152,11 @@ func (m *MinIOClient) ListObjects(ctx context.Context, bucket, prefix string, of
 		}
 
 		if isKeepObject(object.Key) {
-			addFolder(seenFolders, &folders, strings.TrimSuffix(object.Key, ".keep"))
+			keepPrefix := strings.TrimSuffix(object.Key, ".keep")
+			if keepPrefix == normalizedPrefix {
+				continue
+			}
+			addFolder(seenFolders, &folders, keepPrefix)
 			continue
 		}
 
@@ -214,13 +218,18 @@ func (m *MinIOClient) DeletePrefix(ctx context.Context, bucket, prefix string) e
 		return err
 	}
 
+	var listErr error
+	deleted := 0
 	objectsCh := make(chan minio.ObjectInfo)
 	go func() {
 		defer close(objectsCh)
 		for object := range m.client.ListObjects(ctx, bucket, minio.ListObjectsOptions{Prefix: normalizedPrefix, Recursive: true}) {
-			if object.Err == nil {
-				objectsCh <- object
+			if object.Err != nil {
+				listErr = object.Err
+				return
 			}
+			objectsCh <- object
+			deleted++
 		}
 	}()
 
@@ -228,6 +237,12 @@ func (m *MinIOClient) DeletePrefix(ctx context.Context, bucket, prefix string) e
 		if removeErr.Err != nil {
 			return removeErr.Err
 		}
+	}
+	if listErr != nil {
+		return listErr
+	}
+	if deleted == 0 {
+		return ErrObjectNotFound
 	}
 	return nil
 }
