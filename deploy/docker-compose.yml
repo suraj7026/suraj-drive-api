@@ -10,10 +10,9 @@ services:
       - SERVER_PORT=4001
       - SERVER_FRONTEND_URL=https://drive.sudarshanrajagopalan.one
       - SERVER_IS_PRODUCTION=true
-      - MINIO_ENDPOINT=host.docker.internal:9000
+      - MINIO_ENDPOINT=s3.sudarshanrajagopalan.one
       - MINIO_PUBLIC_ENDPOINT=s3.sudarshanrajagopalan.one
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - MINIO_USE_SSL=true
     restart: unless-stopped
 
 networks:
