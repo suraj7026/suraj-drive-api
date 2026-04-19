@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
@@ -27,33 +27,27 @@ jobs:
           push: true
           tags: ghcr.io/suraj7026/drive-api:latest
 
-      - name: Copy compose file to server
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SERVER_IP }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "deploy/docker-compose.yml"
-          target: "~/drive/api/"
-          strip_components: 1
+      - name: Local Deploy
+        env:
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
+          MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REDIRECT_URL: ${{ secrets.GOOGLE_REDIRECT_URL }}
+        run: |
+          mkdir -p ~/drive/api
+          cd ~/drive/api
 
-      - name: SSH Deploy & Auto-Config
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SERVER_IP }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            mkdir -p ~/drive/api
-            cd ~/drive/api
+          echo "JWT_SECRET=${JWT_SECRET}" > .env
+          echo "MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}" >> .env
+          echo "MINIO_SECRET_KEY=${MINIO_SECRET_KEY}" >> .env
+          echo "GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}" >> .env
+          echo "GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}" >> .env
+          echo "GOOGLE_REDIRECT_URL=${GOOGLE_REDIRECT_URL}" >> .env
+          chmod 600 .env
 
-            echo "JWT_SECRET=${{ secrets.JWT_SECRET }}" > .env
-            echo "MINIO_ACCESS_KEY=${{ secrets.MINIO_ACCESS_KEY }}" >> .env
-            echo "MINIO_SECRET_KEY=${{ secrets.MINIO_SECRET_KEY }}" >> .env
-            echo "GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}" >> .env
-            echo "GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}" >> .env
-            echo "GOOGLE_REDIRECT_URL=${{ secrets.GOOGLE_REDIRECT_URL }}" >> .env
-            chmod 600 .env
+          cp "$GITHUB_WORKSPACE/deploy/docker-compose.yml" ./docker-compose.yml
 
-            docker compose pull
-            docker compose up -d
+          docker compose pull
+          docker compose up -d
