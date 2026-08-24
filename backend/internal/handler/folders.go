@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"path"
 	"strings"
+
+	"surajdrive/backend/internal/auth"
 )
 
 func (h *FileHandler) CreateFolder(w http.ResponseWriter, r *http.Request) {
@@ -40,14 +42,18 @@ func (h *FileHandler) CreateFolder(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
+	if err := h.recordObjectMetadata(r, fullPrefix+".keep"); err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
 
 	writeJSON(w, http.StatusCreated, map[string]string{"prefix": fullPrefix})
 }
 
 func (h *FileHandler) DeleteFolder(w http.ResponseWriter, r *http.Request) {
-	bucket, err := bucketFromRequest(r, h.store)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, err)
+	principal := auth.PrincipalFromContext(r.Context())
+	if principal == nil {
+		writeError(w, http.StatusUnauthorized, fmt.Errorf("missing authenticated drive"))
 		return
 	}
 
@@ -57,10 +63,11 @@ func (h *FileHandler) DeleteFolder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.DeletePrefix(r.Context(), bucket, prefix); err != nil {
-		writeStorageError(w, err)
+	itemID, err := h.metadata.TrashFolderByPrefix(r.Context(), principal.DriveID, principal.UserID, prefix)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"deleted_prefix": prefix})
+	writeJSON(w, http.StatusOK, map[string]string{"trashed": itemID})
 }

@@ -15,6 +15,14 @@ jwt:
   secret: "replace-with-a-strong-random-secret"
   expiry_hrs: 24
 
+database:
+  url: ""
+  migration_url: ""
+  max_connections: 20
+  min_connections: 2
+  health_timeout_secs: 5
+  max_connection_age_mins: 30
+
 minio:
   endpoint: "s3.sudarshanrajagopalan.one"
   public_endpoint: "s3.sudarshanrajagopalan.one"

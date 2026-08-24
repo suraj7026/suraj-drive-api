@@ -3,12 +3,14 @@ package handler
 import (
 	"fmt"
 	"net/http"
+
+	"surajdrive/backend/internal/auth"
 )
 
 func (h *FileHandler) Search(w http.ResponseWriter, r *http.Request) {
-	bucket, err := bucketFromRequest(r, h.store)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, err)
+	principal := auth.PrincipalFromContext(r.Context())
+	if principal == nil {
+		writeError(w, http.StatusUnauthorized, fmt.Errorf("missing authenticated drive"))
 		return
 	}
 
@@ -24,9 +26,9 @@ func (h *FileHandler) Search(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response, err := h.store.Search(r.Context(), bucket, r.URL.Query().Get("prefix"), query, offset, limit)
+	response, err := h.metadata.SearchDrive(r.Context(), principal.DriveID, r.URL.Query().Get("prefix"), query, offset, limit)
 	if err != nil {
-		writeStorageError(w, err)
+		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 

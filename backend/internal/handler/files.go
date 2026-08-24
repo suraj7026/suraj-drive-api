@@ -5,21 +5,24 @@ import (
 	"fmt"
 	"net/http"
 
+	"surajdrive/backend/internal/auth"
+	"surajdrive/backend/internal/repository"
 	"surajdrive/backend/internal/storage"
 )
 
 type FileHandler struct {
-	store *storage.MinIOClient
+	store    *storage.MinIOClient
+	metadata *repository.Metadata
 }
 
-func NewFileHandler(store *storage.MinIOClient) *FileHandler {
-	return &FileHandler{store: store}
+func NewFileHandler(store *storage.MinIOClient, metadata *repository.Metadata) *FileHandler {
+	return &FileHandler{store: store, metadata: metadata}
 }
 
 func (h *FileHandler) List(w http.ResponseWriter, r *http.Request) {
-	bucket, err := bucketFromRequest(r, h.store)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, err)
+	principal := auth.PrincipalFromContext(r.Context())
+	if principal == nil {
+		writeError(w, http.StatusUnauthorized, fmt.Errorf("missing authenticated drive"))
 		return
 	}
 
@@ -29,9 +32,9 @@ func (h *FileHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response, err := h.store.ListObjects(r.Context(), bucket, r.URL.Query().Get("prefix"), offset, limit)
+	response, err := h.metadata.ListDrive(r.Context(), principal.DriveID, r.URL.Query().Get("prefix"), offset, limit)
 	if err != nil {
-		writeStorageError(w, err)
+		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -39,9 +42,9 @@ func (h *FileHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *FileHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	bucket, err := bucketFromRequest(r, h.store)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, err)
+	principal := auth.PrincipalFromContext(r.Context())
+	if principal == nil {
+		writeError(w, http.StatusUnauthorized, fmt.Errorf("missing authenticated drive"))
 		return
 	}
 
@@ -51,12 +54,13 @@ func (h *FileHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.DeleteObject(r.Context(), bucket, key); err != nil {
-		writeStorageError(w, err)
+	itemID, err := h.metadata.TrashFileByStorageKey(r.Context(), principal.DriveID, principal.UserID, key)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"deleted": key})
+	writeJSON(w, http.StatusOK, map[string]string{"trashed": itemID})
 }
 
 func (h *FileHandler) Copy(w http.ResponseWriter, r *http.Request) {
@@ -78,6 +82,10 @@ func (h *FileHandler) Copy(w http.ResponseWriter, r *http.Request) {
 	resolvedDst, err := h.store.CopyObject(r.Context(), bucket, body.Src, body.Dst)
 	if err != nil {
 		writeStorageError(w, err)
+		return
+	}
+	if err := h.recordObjectMetadata(r, resolvedDst); err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
 		return
 	}
 

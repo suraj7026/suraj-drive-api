@@ -3,13 +3,18 @@ package middleware
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
 	"surajdrive/backend/internal/auth"
 )
 
-func RequireAuth(jwtSecret string) func(http.Handler) http.Handler {
+type SessionVerifier interface {
+	AuthenticateSession(ctx context.Context, userPublicID, sessionToken string) (*auth.Principal, error)
+}
+
+func RequireAuth(jwtSecret string, verifier SessionVerifier) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenStr := bearerToken(r.Header.Get("Authorization"))
@@ -26,8 +31,18 @@ func RequireAuth(jwtSecret string) func(http.Handler) http.Handler {
 				writeJSONError(w, http.StatusUnauthorized, "invalid token")
 				return
 			}
+			principal, err := verifier.AuthenticateSession(r.Context(), claims.Subject, claims.ID)
+			if err != nil {
+				if errors.Is(err, auth.ErrInvalidSession) {
+					writeJSONError(w, http.StatusUnauthorized, "invalid session")
+				} else {
+					writeJSONError(w, http.StatusServiceUnavailable, "authentication service unavailable")
+				}
+				return
+			}
 
 			ctx := context.WithValue(r.Context(), auth.ClaimsKey, claims)
+			ctx = context.WithValue(ctx, auth.PrincipalKey, principal)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

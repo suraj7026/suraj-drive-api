@@ -69,14 +69,11 @@ func parsePagination(r *http.Request) (int, int, error) {
 }
 
 func bucketFromRequest(r *http.Request, store *storage.MinIOClient) (string, error) {
-	claims := auth.ClaimsFromContext(r.Context())
-	if claims == nil {
-		return "", fmt.Errorf("missing auth claims")
+	principal := auth.PrincipalFromContext(r.Context())
+	if principal == nil || principal.StorageBucket == "" {
+		return "", fmt.Errorf("missing authenticated drive")
 	}
-	bucket, err := store.BucketNameForSubject(claims.Subject)
-	if err != nil {
-		return "", err
-	}
+	bucket := principal.StorageBucket
 	if err := store.EnsureBucket(r.Context(), bucket); err != nil {
 		return "", fmt.Errorf("failed to provision user bucket: %w", err)
 	}

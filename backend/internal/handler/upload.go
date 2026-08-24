@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -65,8 +66,27 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
+	if err := h.recordObjectMetadata(r, resolvedKey); err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
 
 	writeJSON(w, http.StatusCreated, map[string]string{"key": resolvedKey})
+}
+
+func (h *FileHandler) CompletePresignedUpload(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Key) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("key is required"))
+		return
+	}
+	if err := h.recordObjectMetadata(r, body.Key); err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"key": body.Key, "status": "ready"})
 }
 
 func (h *FileHandler) PresignUpload(w http.ResponseWriter, r *http.Request) {

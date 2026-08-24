@@ -10,6 +10,8 @@ services:
       - SERVER_PORT=4001
       - SERVER_FRONTEND_URL=https://drive.sudarshanrajagopalan.one
       - SERVER_IS_PRODUCTION=true
+      - DATABASE_MAX_CONNECTIONS=20
+      - DATABASE_MIN_CONNECTIONS=2
       - MINIO_ENDPOINT=s3.sudarshanrajagopalan.one
       - MINIO_PUBLIC_ENDPOINT=s3.sudarshanrajagopalan.one
       - MINIO_USE_SSL=true

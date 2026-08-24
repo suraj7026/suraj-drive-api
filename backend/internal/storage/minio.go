@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/url"
 	"path"
 	"sort"
@@ -37,6 +38,15 @@ type MinIOClient struct {
 	presignClient *minio.Client
 	bucketPrefix  string
 	region        string
+}
+
+type LegacyObject struct {
+	Key          string
+	Size         int64
+	ETag         string
+	ContentType  string
+	LastModified time.Time
+	FolderMarker bool
 }
 
 func NewMinIOClient(cfg *config.Config) (*MinIOClient, error) {
@@ -130,6 +140,64 @@ func (m *MinIOClient) EnsureBucket(ctx context.Context, bucket string) error {
 		return err
 	}
 	return nil
+}
+
+func (m *MinIOClient) ListLegacyObjects(ctx context.Context, bucket string) ([]LegacyObject, error) {
+	objects := make([]LegacyObject, 0)
+	for object := range m.client.ListObjects(ctx, bucket, minio.ListObjectsOptions{Recursive: true}) {
+		if object.Err != nil {
+			return nil, object.Err
+		}
+		if object.Key == "" || strings.HasSuffix(object.Key, "/") || isPreviewArtifact(object.Key) {
+			continue
+		}
+
+		contentType := object.ContentType
+		if contentType == "" {
+			contentType = mime.TypeByExtension(path.Ext(object.Key))
+		}
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		objects = append(objects, LegacyObject{
+			Key:          object.Key,
+			Size:         object.Size,
+			ETag:         strings.Trim(object.ETag, "\""),
+			ContentType:  contentType,
+			LastModified: object.LastModified,
+			FolderMarker: isKeepObject(object.Key),
+		})
+	}
+	return objects, nil
+}
+
+func (m *MinIOClient) StatLegacyObject(ctx context.Context, bucket, key string) (LegacyObject, error) {
+	normalizedKey, err := normalizeObjectKey(key)
+	if err != nil {
+		return LegacyObject{}, err
+	}
+	object, err := m.client.StatObject(ctx, bucket, normalizedKey, minio.StatObjectOptions{})
+	if err != nil {
+		if isExistenceProbeMiss(err) {
+			return LegacyObject{}, ErrObjectNotFound
+		}
+		return LegacyObject{}, err
+	}
+	contentType := object.ContentType
+	if contentType == "" {
+		contentType = mime.TypeByExtension(path.Ext(object.Key))
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return LegacyObject{
+		Key:          object.Key,
+		Size:         object.Size,
+		ETag:         strings.Trim(object.ETag, "\""),
+		ContentType:  contentType,
+		LastModified: object.LastModified,
+		FolderMarker: isKeepObject(object.Key),
+	}, nil
 }
 
 func (m *MinIOClient) ListObjects(ctx context.Context, bucket, prefix string, offset, limit int) (model.ListResponse, error) {

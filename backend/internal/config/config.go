@@ -26,14 +26,22 @@ type Config struct {
 		Secret    string `mapstructure:"secret"`
 		ExpiryHrs int    `mapstructure:"expiry_hrs"`
 	} `mapstructure:"jwt"`
+	Database struct {
+		URL                  string `mapstructure:"url"`
+		MigrationURL         string `mapstructure:"migration_url"`
+		MaxConnections       int    `mapstructure:"max_connections"`
+		MinConnections       int    `mapstructure:"min_connections"`
+		HealthTimeoutSecs    int    `mapstructure:"health_timeout_secs"`
+		MaxConnectionAgeMins int    `mapstructure:"max_connection_age_mins"`
+	} `mapstructure:"database"`
 	MinIO struct {
-		Endpoint     string `mapstructure:"endpoint"`
+		Endpoint       string `mapstructure:"endpoint"`
 		PublicEndpoint string `mapstructure:"public_endpoint"`
-		AccessKey    string `mapstructure:"access_key"`
-		SecretKey    string `mapstructure:"secret_key"`
-		BucketPrefix string `mapstructure:"bucket_prefix"`
-		UseSSL       bool   `mapstructure:"use_ssl"`
-		Region       string `mapstructure:"region"`
+		AccessKey      string `mapstructure:"access_key"`
+		SecretKey      string `mapstructure:"secret_key"`
+		BucketPrefix   string `mapstructure:"bucket_prefix"`
+		UseSSL         bool   `mapstructure:"use_ssl"`
+		Region         string `mapstructure:"region"`
 	} `mapstructure:"minio"`
 }
 
@@ -52,6 +60,10 @@ func Load() (*Config, error) {
 	viper.SetDefault("server.read_timeout_secs", 15)
 	viper.SetDefault("server.write_timeout_secs", 15)
 	viper.SetDefault("jwt.expiry_hrs", 24)
+	viper.SetDefault("database.max_connections", 20)
+	viper.SetDefault("database.min_connections", 2)
+	viper.SetDefault("database.health_timeout_secs", 5)
+	viper.SetDefault("database.max_connection_age_mins", 30)
 	viper.SetDefault("minio.bucket_prefix", "drive")
 	viper.SetDefault("minio.region", "us-east-1")
 
@@ -87,6 +99,12 @@ func bindEnvKeys() error {
 		"google.allowed_domain",
 		"jwt.secret",
 		"jwt.expiry_hrs",
+		"database.url",
+		"database.migration_url",
+		"database.max_connections",
+		"database.min_connections",
+		"database.health_timeout_secs",
+		"database.max_connection_age_mins",
 		"minio.endpoint",
 		"minio.public_endpoint",
 		"minio.access_key",
@@ -123,6 +141,18 @@ func (c *Config) validate() error {
 	}
 	if c.JWT.ExpiryHrs <= 0 {
 		return fmt.Errorf("jwt.expiry_hrs must be greater than 0")
+	}
+	if strings.TrimSpace(c.Database.URL) == "" {
+		return fmt.Errorf("database.url is required")
+	}
+	if c.Database.MaxConnections <= 0 {
+		return fmt.Errorf("database.max_connections must be greater than 0")
+	}
+	if c.Database.MinConnections < 0 || c.Database.MinConnections > c.Database.MaxConnections {
+		return fmt.Errorf("database.min_connections must be between 0 and database.max_connections")
+	}
+	if c.Database.HealthTimeoutSecs <= 0 || c.Database.MaxConnectionAgeMins <= 0 {
+		return fmt.Errorf("database timeouts must be greater than 0")
 	}
 	if strings.TrimSpace(c.MinIO.Endpoint) == "" || strings.TrimSpace(c.MinIO.AccessKey) == "" || strings.TrimSpace(c.MinIO.SecretKey) == "" {
 		return fmt.Errorf("minio.endpoint, minio.access_key, and minio.secret_key are required")

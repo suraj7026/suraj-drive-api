@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -10,8 +11,11 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"surajdrive/backend/internal/config"
+	"surajdrive/backend/internal/database"
 	"surajdrive/backend/internal/handler"
+	"surajdrive/backend/internal/importer"
 	appmiddleware "surajdrive/backend/internal/middleware"
+	"surajdrive/backend/internal/repository"
 	"surajdrive/backend/internal/storage"
 )
 
@@ -20,14 +24,28 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to load config")
 	}
+	db, err := database.Open(context.Background(), database.PoolConfig{
+		URL:              cfg.Database.URL,
+		MaxConnections:   int32(cfg.Database.MaxConnections),
+		MinConnections:   int32(cfg.Database.MinConnections),
+		HealthTimeout:    time.Duration(cfg.Database.HealthTimeoutSecs) * time.Second,
+		MaxConnectionAge: time.Duration(cfg.Database.MaxConnectionAgeMins) * time.Minute,
+	})
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to connect to PostgreSQL")
+	}
+	defer db.Close()
+	metadata := repository.NewMetadata(db)
 
 	store, err := storage.NewMinIOClient(cfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to connect to MinIO")
 	}
 
-	authHandler := handler.NewAuthHandler(cfg, store)
-	fileHandler := handler.NewFileHandler(store)
+	legacyImporter := importer.NewLegacy(metadata, store)
+	authHandler := handler.NewAuthHandler(cfg, store, metadata, legacyImporter)
+	fileHandler := handler.NewFileHandler(store, metadata)
+	metadataHandler := handler.NewMetadataHandler(legacyImporter)
 
 	r := chi.NewRouter()
 	r.Use(chimiddleware.RequestID)
@@ -41,19 +59,34 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+	r.Get("/api/ready", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.Database.HealthTimeoutSecs)*time.Second)
+		defer cancel()
+		var metadataProbe int
+		if err := db.QueryRow(ctx, "SELECT count(*) FROM drive.user_account WHERE false").Scan(&metadataProbe); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"unavailable"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ready"}`))
+	})
 
 	r.Route("/api/auth", func(r chi.Router) {
 		r.Get("/google/login", authHandler.GoogleLogin)
 		r.Get("/google/callback", authHandler.GoogleCallback)
-		r.Post("/logout", authHandler.Logout)
-		r.With(appmiddleware.RequireAuth(cfg.JWT.Secret)).Get("/me", authHandler.Me)
+		r.With(appmiddleware.RequireAuth(cfg.JWT.Secret, metadata)).Post("/logout", authHandler.Logout)
+		r.With(appmiddleware.RequireAuth(cfg.JWT.Secret, metadata)).Get("/me", authHandler.Me)
 	})
 
 	r.Route("/api", func(r chi.Router) {
-		r.Use(appmiddleware.RequireAuth(cfg.JWT.Secret))
+		r.Use(appmiddleware.RequireAuth(cfg.JWT.Secret, metadata))
 
 		r.Get("/files", fileHandler.List)
 		r.Post("/files/upload", fileHandler.Upload)
+		r.Post("/files/upload/complete", fileHandler.CompletePresignedUpload)
 		r.Delete("/files", fileHandler.Delete)
 		r.Post("/files/copy", fileHandler.Copy)
 		r.Get("/files/presign/download", fileHandler.PresignDownload)
@@ -62,6 +95,9 @@ func main() {
 		r.Post("/folders", fileHandler.CreateFolder)
 		r.Delete("/folders", fileHandler.DeleteFolder)
 		r.Get("/search", fileHandler.Search)
+		r.Post("/metadata/reconcile", metadataHandler.ReconcileLegacy)
+		r.Post("/items/{itemID}/trash", fileHandler.TrashItem)
+		r.Post("/items/{itemID}/restore", fileHandler.RestoreItem)
 	})
 
 	server := &http.Server{

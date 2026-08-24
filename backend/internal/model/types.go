@@ -3,6 +3,7 @@ package model
 import "time"
 
 type FileObject struct {
+	ID           string    `json:"id,omitempty"`
 	Key          string    `json:"key"`
 	Name         string    `json:"name"`
 	Size         int64     `json:"size"`
@@ -12,6 +13,7 @@ type FileObject struct {
 }
 
 type FolderEntry struct {
+	ID     string `json:"id,omitempty"`
 	Prefix string `json:"prefix"`
 	Name   string `json:"name"`
 }
