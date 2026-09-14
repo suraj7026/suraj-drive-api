@@ -16,6 +16,7 @@ import (
 )
 
 var ErrInvalidSession = auth.ErrInvalidSession
+var ErrAccountUnavailable = errors.New("account is unavailable")
 
 type GoogleAccount struct {
 	Subject       string
@@ -50,13 +51,17 @@ func (m *Metadata) ProvisionGoogleAccount(ctx context.Context, account GoogleAcc
 	`, account.Subject).Scan(&userID)
 	switch {
 	case err == nil:
-		if _, err := tx.Exec(ctx, `
+		updated, err := tx.Exec(ctx, `
 			UPDATE drive.user_account
 			SET primary_email = $2, display_name = $3, picture_url = NULLIF($4, ''),
-				last_login_at = now(), status = 'active'
-			WHERE id = $1
-		`, userID, account.Email, account.Name, account.Picture); err != nil {
+				last_login_at = now()
+			WHERE id = $1 AND status = 'active'
+		`, userID, account.Email, account.Name, account.Picture)
+		if err != nil {
 			return nil, fmt.Errorf("update user account: %w", err)
+		}
+		if updated.RowsAffected() != 1 {
+			return nil, ErrAccountUnavailable
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE drive.oauth_identity
@@ -74,10 +79,13 @@ func (m *Metadata) ProvisionGoogleAccount(ctx context.Context, account GoogleAcc
 			ON CONFLICT (lower(primary_email)) DO UPDATE
 			SET display_name = EXCLUDED.display_name,
 				picture_url = EXCLUDED.picture_url,
-				last_login_at = now(),
-				status = 'active'
+				last_login_at = now()
+			WHERE user_account.status = 'active'
 			RETURNING id
 		`, account.Email, account.Name, account.Picture).Scan(&userID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, ErrAccountUnavailable
+			}
 			return nil, fmt.Errorf("create user account: %w", err)
 		}
 		if err := tx.QueryRow(ctx, `
@@ -131,6 +139,40 @@ func (m *Metadata) ProvisionGoogleAccount(ctx context.Context, account GoogleAcc
 		ON CONFLICT (drive_id) WHERE parent_id IS NULL DO NOTHING
 	`, driveInternalID, userID); err != nil {
 		return nil, fmt.Errorf("provision drive root: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE drive.share_invitation
+		SET status = 'expired', updated_at = now()
+		WHERE status = 'pending' AND expires_at <= now()
+	`); err != nil {
+		return nil, fmt.Errorf("expire stale share invitations: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		WITH pending AS (
+			SELECT invitation.id, invitation.item_id, invitation.role, invitation.invited_by_user_id
+			FROM drive.share_invitation invitation
+			WHERE lower(invitation.invited_email) = lower($2) AND invitation.status = 'pending'
+				AND invitation.expires_at > now()
+			FOR UPDATE
+		), permissions AS (
+			INSERT INTO drive.item_permission (item_id, grantee_user_id, role, created_by_user_id)
+			SELECT pending.item_id, $1, pending.role, pending.invited_by_user_id FROM pending
+			ON CONFLICT (item_id, grantee_user_id) DO UPDATE
+			SET role = EXCLUDED.role, created_by_user_id = EXCLUDED.created_by_user_id
+			RETURNING item_id
+		), accepted AS (
+			UPDATE drive.share_invitation invitation
+			SET status = 'accepted', accepted_by_user_id = $1, accepted_at = now(), updated_at = now()
+			WHERE invitation.id IN (SELECT id FROM pending)
+			RETURNING invitation.item_id, invitation.invited_by_user_id
+		)
+		INSERT INTO drive.notification_outbox (recipient_user_id, notification_type, payload)
+		SELECT accepted.invited_by_user_id, 'share.accepted',
+			jsonb_build_object('item_id', item.public_id::text, 'accepted_by_user_id', $3::text)
+		FROM accepted JOIN drive.item item ON item.id = accepted.item_id
+	`, userID, account.Email, principal.UserID); err != nil {
+		return nil, fmt.Errorf("accept pending share invitations: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

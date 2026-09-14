@@ -31,7 +31,12 @@ func ensureStarted() error {
 			}
 		}()
 		vips.LoggingSettings(nil, vips.LogLevelError)
-		vips.Startup(nil)
+		startupErr = vips.Startup(&vips.Config{
+			ConcurrencyLevel: 1,
+			MaxCacheFiles:    0,
+			MaxCacheMem:      64 << 20,
+			MaxCacheSize:     20,
+		})
 	})
 	return startupErr
 }

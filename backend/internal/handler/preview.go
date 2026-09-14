@@ -1,24 +1,21 @@
 package handler
 
 import (
-	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
-	"github.com/rs/zerolog/log"
-
-	"surajdrive/backend/internal/imageconv"
+	"surajdrive/backend/internal/auth"
 	"surajdrive/backend/internal/model"
-	"surajdrive/backend/internal/storage"
+	"surajdrive/backend/internal/repository"
+	"surajdrive/backend/internal/validation"
 )
 
 const (
-	previewURLTTL          = 15 * time.Minute
-	previewJPEGContentType = "image/jpeg"
+	previewURLTTL = 15 * time.Minute
 )
 
 // Preview returns a presigned URL to a JPEG render of the requested object.
@@ -26,9 +23,9 @@ const (
 // `.previews/` prefix of the user's bucket. For all other file types it
 // behaves like PresignDownload (pass-through).
 func (h *FileHandler) Preview(w http.ResponseWriter, r *http.Request) {
-	bucket, err := bucketFromRequest(r, h.store)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, err)
+	principal := auth.PrincipalFromContext(r.Context())
+	if principal == nil {
+		writeError(w, http.StatusUnauthorized, fmt.Errorf("missing authenticated drive"))
 		return
 	}
 
@@ -37,9 +34,13 @@ func (h *FileHandler) Preview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("key is required"))
 		return
 	}
+	if err := validation.ItemPath(key, false); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 
 	if !isHEICKey(key) {
-		urlValue, err := h.store.PresignedGetURL(r.Context(), bucket, key, previewURLTTL)
+		urlValue, err := h.store.PresignedGetURLWithDisposition(r.Context(), principal.StorageBucket, key, previewURLTTL, path.Base(key), true)
 		if err != nil {
 			writeStorageError(w, err)
 			return
@@ -52,51 +53,36 @@ func (h *FileHandler) Preview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	previewKey := previewKeyFor(key)
+	preview, err := h.metadata.GetOrQueuePreview(r.Context(), principal.DriveID, key, repository.HEICPreviewProfile)
+	if err != nil {
+		if errors.Is(err, repository.ErrPreviewSourceNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if preview.Status == "failed" {
+		writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("preview generation failed"))
+		return
+	}
+	if preview.Status != "succeeded" || preview.ArtifactKey == "" {
+		writeJSON(w, http.StatusAccepted, model.PreviewResponse{
+			Status: preview.Status, JobID: preview.JobID, RetryAfter: 2,
+		})
+		return
+	}
 
-	exists, err := h.store.ObjectExists(r.Context(), bucket, previewKey)
+	urlValue, err := h.store.PresignedGetURLWithDisposition(r.Context(), preview.SourceBucket, preview.ArtifactKey, previewURLTTL, path.Base(key)+".jpg", true)
 	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
 
-	if !exists {
-		heicBytes, err := h.store.GetObject(r.Context(), bucket, key)
-		if err != nil {
-			writeStorageError(w, err)
-			return
-		}
-
-		jpegBytes, err := imageconv.HEICToJPEG(heicBytes)
-		if err != nil {
-			log.Error().Err(err).Str("key", key).Msg("heic preview conversion failed")
-			writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("failed to convert HEIC: %w", err))
-			return
-		}
-
-		if err := h.store.PutObject(
-			r.Context(),
-			bucket,
-			previewKey,
-			previewJPEGContentType,
-			bytes.NewReader(jpegBytes),
-			int64(len(jpegBytes)),
-		); err != nil {
-			log.Error().Err(err).Str("preview_key", previewKey).Msg("failed to upload heic preview")
-			writeStorageError(w, err)
-			return
-		}
-	}
-
-	urlValue, err := h.store.PresignedGetURL(r.Context(), bucket, previewKey, previewURLTTL)
-	if err != nil {
-		writeStorageError(w, err)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, model.PresignResponse{
+	writeJSON(w, http.StatusOK, model.PreviewResponse{
+		Status:    "ready",
 		URL:       urlValue,
-		Key:       previewKey,
+		Key:       preview.ArtifactKey,
 		ExpiresIn: "15m",
 	})
 }
@@ -104,11 +90,4 @@ func (h *FileHandler) Preview(w http.ResponseWriter, r *http.Request) {
 func isHEICKey(key string) bool {
 	lower := strings.ToLower(key)
 	return strings.HasSuffix(lower, ".heic") || strings.HasSuffix(lower, ".heif")
-}
-
-// previewKeyFor returns a deterministic, collision-resistant cache key for
-// the JPEG preview of the given source object key.
-func previewKeyFor(sourceKey string) string {
-	sum := sha256.Sum256([]byte(sourceKey))
-	return storage.PreviewsPrefix + hex.EncodeToString(sum[:]) + ".jpg"
 }

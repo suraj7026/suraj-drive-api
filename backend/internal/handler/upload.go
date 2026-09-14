@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"surajdrive/backend/internal/model"
+	"surajdrive/backend/internal/validation"
 )
 
 const maxServerSideUpload = 10 << 20
@@ -39,13 +40,17 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	fileName := path.Base(header.Filename)
-	if fileName == "." || fileName == "/" || fileName == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("file name is required"))
+	fileName := path.Base(strings.ReplaceAll(header.Filename, "\\", "/"))
+	if err := validation.ItemName(fileName); err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 
 	prefix := r.FormValue("prefix")
+	if err := validation.ItemPath(strings.TrimSuffix(prefix, "/"), true); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	requestedKey := fileName
 	if strings.TrimSpace(prefix) != "" {
 		requestedKey = path.Join(prefix, fileName)
@@ -82,6 +87,10 @@ func (h *FileHandler) CompletePresignedUpload(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, fmt.Errorf("key is required"))
 		return
 	}
+	if err := validation.ItemPath(body.Key, false); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	if err := h.recordObjectMetadata(r, body.Key); err != nil {
 		writeError(w, http.StatusServiceUnavailable, err)
 		return
@@ -99,6 +108,10 @@ func (h *FileHandler) PresignUpload(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("key")
 	if key == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("key is required"))
+		return
+	}
+	if err := validation.ItemPath(key, false); err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 

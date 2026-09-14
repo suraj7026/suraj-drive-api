@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/rs/zerolog/log"
+
 	"surajdrive/backend/internal/auth"
 	"surajdrive/backend/internal/storage"
 )
@@ -26,7 +28,47 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {
-	writeJSON(w, status, map[string]string{"error": err.Error()})
+	message := err.Error()
+	code := errorCodeForStatus(status)
+	if status >= http.StatusInternalServerError {
+		log.Error().Err(err).Int("status", status).Msg("request failed")
+		message = "internal server error"
+		code = "internal_error"
+		if status == http.StatusServiceUnavailable {
+			message = "service temporarily unavailable"
+			code = "service_unavailable"
+		}
+	}
+	payload := map[string]string{"error": message, "message": message, "code": code}
+	if requestID := w.Header().Get("X-Request-ID"); requestID != "" {
+		payload["request_id"] = requestID
+	}
+	writeJSON(w, status, payload)
+}
+
+func errorCodeForStatus(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "bad_request"
+	case http.StatusUnauthorized:
+		return "unauthorized"
+	case http.StatusForbidden:
+		return "forbidden"
+	case http.StatusNotFound:
+		return "not_found"
+	case http.StatusConflict:
+		return "conflict"
+	case http.StatusGone:
+		return "gone"
+	case http.StatusRequestEntityTooLarge:
+		return "payload_too_large"
+	case http.StatusUnprocessableEntity:
+		return "unprocessable_entity"
+	case http.StatusInsufficientStorage:
+		return "insufficient_storage"
+	default:
+		return "request_failed"
+	}
 }
 
 func writeStorageError(w http.ResponseWriter, err error) {

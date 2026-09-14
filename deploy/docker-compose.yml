@@ -1,21 +1,54 @@
 services:
+  clamav:
+    image: ${CLAMAV_IMAGE:?CLAMAV_IMAGE is required and must be pinned}
+    container_name: surajdrive-clamav
+    volumes:
+      - clamav-signatures:/var/lib/clamav
+    restart: unless-stopped
+
   drive-api:
-    image: ghcr.io/suraj7026/drive-api:latest
+    image: ghcr.io/suraj7026/drive-api:${IMAGE_TAG:?IMAGE_TAG is required}
     container_name: surajdrive-backend
     pull_policy: always
-    env_file: .env
+    env_file: ${APP_ENV_FILE:-.env}
+    depends_on:
+      - clamav
     ports:
       - "4001:4001"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=512m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     environment:
       - SERVER_PORT=4001
       - SERVER_FRONTEND_URL=https://drive.sudarshanrajagopalan.one
       - SERVER_IS_PRODUCTION=true
+      - SERVER_TRUSTED_PROXY_CIDRS=172.16.0.0/12
       - DATABASE_MAX_CONNECTIONS=20
       - DATABASE_MIN_CONNECTIONS=2
       - MINIO_ENDPOINT=s3.sudarshanrajagopalan.one
       - MINIO_PUBLIC_ENDPOINT=s3.sudarshanrajagopalan.one
       - MINIO_USE_SSL=true
+      - SECURITY_MALWARE_SCAN_ENABLED=true
+      - SECURITY_CLAMAV_ADDRESS=clamav:3310
+      - SECURITY_SCAN_TIMEOUT_SECS=300
+      - SECURITY_SCAN_WORKERS=2
+      - NOTIFICATIONS_ENABLED=true
+      - NOTIFICATIONS_FROM_NAME=Suraj Drive
+      - NOTIFICATIONS_PUBLIC_URL=https://drive.sudarshanrajagopalan.one
+      - NOTIFICATIONS_TIMEOUT_SECS=30
+      - NOTIFICATIONS_WORKERS=2
+      - NOTIFICATIONS_ALLOW_PLAINTEXT=false
     restart: unless-stopped
+    stop_grace_period: 45s
+    mem_limit: 1536m
+    cpus: 2.0
+
+volumes:
+  clamav-signatures:
 
 networks:
   default:

@@ -1,0 +1,77 @@
+name: Backend CI
+
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      TEST_DATABASE_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+      TEST_APP_DATABASE_URL: postgres://drive_app:ci-test-only@127.0.0.1:5432/postgres?sslmode=disable
+      TEST_MINIO_ENDPOINT: 127.0.0.1:9000
+      TEST_MINIO_ACCESS_KEY: drive-ci
+      TEST_MINIO_SECRET_KEY: drive-ci-test-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.25.13
+          cache-dependency-path: backend/go.sum
+      - name: Install native preview dependency
+        run: sudo apt-get update && sudo apt-get install -y libvips-dev
+      - name: Verify formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Prepare isolated app-role integration database
+        env:
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+          DATABASE_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+          DATABASE_APP_PASSWORD: ci-test-only
+        run: |
+          go run ./cmd/migrate up
+          go run ./cmd/provision-db-role
+      - name: Start isolated MinIO
+        run: |
+          docker run --detach --rm --name drive-ci-minio --publish 9000:9000 \
+            --env MINIO_ROOT_USER=drive-ci --env MINIO_ROOT_PASSWORD=drive-ci-test-only \
+            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs drive-ci-minio
+          exit 1
+      - name: Test with race detector
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Scan reachable Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - name: Build binaries
+        run: go build ./cmd/server ./cmd/migrate
+      - name: Build container
+        working-directory: .
+        run: docker build -t drive-api:${GITHUB_SHA} ./backend

@@ -57,6 +57,7 @@ func main() {
 	}
 	grantConnect := "GRANT CONNECT ON DATABASE " + pgx.Identifier{databaseName}.Sanitize() + " TO drive_app"
 	statements := []string{
+		"ALTER ROLE drive_app NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
 		grantConnect,
 		"GRANT USAGE ON SCHEMA drive TO drive_app",
 		"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA drive TO drive_app",

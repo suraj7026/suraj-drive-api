@@ -63,8 +63,8 @@ func TestMetadataFoundationMigration(t *testing.T) {
 	`).Scan(&tableCount); err != nil {
 		t.Fatalf("count migrated tables: %v", err)
 	}
-	if tableCount != 14 {
-		t.Fatalf("expected 14 drive tables, got %d", tableCount)
+	if tableCount != 27 {
+		t.Fatalf("expected 27 drive tables, got %d", tableCount)
 	}
 
 	if _, err := targetDB.ExecContext(ctx, `

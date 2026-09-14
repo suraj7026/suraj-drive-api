@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/oauth2"
 
@@ -108,6 +110,10 @@ func (h *AuthHandler) GoogleCallback(w http.ResponseWriter, r *http.Request) {
 		StorageBucket: bucket,
 	})
 	if err != nil {
+		if errors.Is(err, repository.ErrAccountUnavailable) {
+			writeError(w, http.StatusForbidden, repository.ErrAccountUnavailable)
+			return
+		}
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("failed to provision account metadata: %w", err))
 		return
 	}
@@ -180,6 +186,55 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 		"picture":  principal.Picture,
 		"drive_id": principal.DriveID,
 	})
+}
+
+func (h *AuthHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
+	principal, claims := auth.PrincipalFromContext(r.Context()), auth.ClaimsFromContext(r.Context())
+	if principal == nil || claims == nil {
+		writeError(w, http.StatusUnauthorized, fmt.Errorf("missing authenticated user"))
+		return
+	}
+	sessions, err := h.metadata.ListAuthSessions(r.Context(), principal.UserID, claims.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": sessions})
+}
+
+func (h *AuthHandler) RevokeSessionByID(w http.ResponseWriter, r *http.Request) {
+	principal, claims := auth.PrincipalFromContext(r.Context()), auth.ClaimsFromContext(r.Context())
+	if principal == nil || claims == nil {
+		writeError(w, http.StatusUnauthorized, fmt.Errorf("missing authenticated user"))
+		return
+	}
+	current, err := h.metadata.RevokeAuthSessionByID(r.Context(), principal.UserID, chi.URLParam(r, "sessionID"), claims.ID)
+	if err != nil {
+		if errors.Is(err, repository.ErrItemNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if current {
+		clearSessionCookie(w, h.cfg.Server.IsProd)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"revoked": true, "current": current})
+}
+
+func (h *AuthHandler) RevokeOtherSessions(w http.ResponseWriter, r *http.Request) {
+	principal, claims := auth.PrincipalFromContext(r.Context()), auth.ClaimsFromContext(r.Context())
+	if principal == nil || claims == nil {
+		writeError(w, http.StatusUnauthorized, fmt.Errorf("missing authenticated user"))
+		return
+	}
+	count, err := h.metadata.RevokeOtherAuthSessions(r.Context(), principal.UserID, claims.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"revoked": count})
 }
 
 func requestIP(r *http.Request) string {

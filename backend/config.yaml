@@ -4,6 +4,11 @@ server:
   is_production: false
   read_timeout_secs: 15
   write_timeout_secs: 15
+  read_header_timeout_secs: 5
+  idle_timeout_secs: 60
+  # Comma-separated network ranges for reverse proxies that may supply
+  # X-Forwarded-For. Leave empty when clients connect directly.
+  trusted_proxy_cidrs: ""
 
 google:
   client_id: "replace-with-google-client-id"
@@ -31,3 +36,21 @@ minio:
   bucket_prefix: "drive"
   use_ssl: true
   region: "us-east-1"
+
+security:
+  malware_scan_enabled: false
+  clamav_address: ""
+  scan_timeout_secs: 300
+  scan_workers: 2
+
+notifications:
+  enabled: false
+  smtp_address: ""
+  smtp_username: ""
+  smtp_password: ""
+  from_address: ""
+  from_name: "Suraj Drive"
+  public_url: "http://localhost:4000"
+  timeout_secs: 30
+  workers: 2
+  allow_plaintext: false
