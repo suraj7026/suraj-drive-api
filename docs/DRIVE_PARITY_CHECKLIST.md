@@ -121,7 +121,8 @@ Each entry includes the trigger, consequence, repair target, and acceptance chec
 - 2026-09-13: WebUI `npm run test:unit` passed all six text-preview tests; lint, TypeScript, production build, and zero-vulnerability dependency audit passed after the dependency patch update. The unit command is now included in WebUI CI. The build still reports the existing Google Sans fallback warning.
 - 2026-09-13: GitHub repository secret/variable names were inspected without reading values. The backend repository lacks `DATABASE_URL`, `DATABASE_MIGRATION_URL`, the required SMTP settings, and `CLAMAV_IMAGE`; the current deploy workflow requires them. Configure and validate these before a release attempt.
 - 2026-09-14: After immutable upload completion, byte-derived MIME handling, trusted-proxy resolution, and dialog/container hardening, the backend race suite passed against isolated PostgreSQL and real MinIO, followed by `go vet`. WebUI unit tests, ESLint, TypeScript, production build, and high-severity dependency audit passed. Two local production responses carried HSTS, different CSP nonces, and nonces matching every rendered script. Both compose files passed `docker compose config`; Alpine 3.23 builder/runtime manifests were verified; both workflow sets passed `actionlint`.
-- Required before closing release: real MinIO adversarial uploads/cleanup, browser login/file workflows, mobile/keyboard checks, large-folder/upload load tests, scanner-limit tests, exact deployed commit/migration checks, rollback rehearsal, and recovery drills. No production sign-in or acceptance result has been established in this continuation.
+- 2026-09-14: The existing production release completed Google OAuth and opened the authenticated archive with its three existing objects. The current public release still lacks the new CSP/HSTS and returns 401 from the expected readiness path, confirming that this PR commit and schema v16 are not deployed; this is baseline evidence, not acceptance of the repaired release.
+- Required before closing release: real MinIO adversarial uploads/cleanup, post-deploy browser file workflows, mobile/keyboard checks, large-folder/upload load tests, scanner-limit tests, exact deployed commit/migration checks, rollback rehearsal, and recovery drills.
 
 ## P0: production-safe core drive
 
@@ -130,7 +131,7 @@ Each entry includes the trigger, consequence, repair target, and acceptance chec
 - [ ] Add `DATABASE_URL` (app role) and `DATABASE_MIGRATION_URL` (migration owner) to GitHub Actions secrets.
 - [ ] Rotate the database password disclosed during setup and reprovision both roles.
 - [ ] Deploy migrations before the API container and verify migration version/readiness in production. The workflow now migrates first, waits up to five minutes for PostgreSQL, MinIO, and ClamAV-aware readiness, and restores the prior compose configuration on failure; the actual production rehearsal remains.
-- [ ] Complete one real Google login against the deployed callback and confirm one user, identity, personal drive, root, membership, and session are created.
+- [ ] Complete one real Google login against the repaired deployed callback and confirm one user, identity, personal drive, root, membership, and session are created. OAuth and archive loading pass on the pre-PR production release, but the post-deploy database invariants remain unverified.
 - [ ] Run reconciliation for every existing user bucket and compare object counts, total bytes, and sampled ETags.
 - [ ] Keep the old MinIO-only image available for rollback until reconciliation is signed off.
 
