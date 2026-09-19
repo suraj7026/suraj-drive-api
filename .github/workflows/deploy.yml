@@ -20,6 +20,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate production configuration
+        env:
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
+          MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REDIRECT_URL: ${{ secrets.GOOGLE_REDIRECT_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_MIGRATION_URL: ${{ secrets.DATABASE_MIGRATION_URL }}
+          SMTP_ADDRESS: ${{ secrets.SMTP_ADDRESS }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM_ADDRESS: ${{ secrets.SMTP_FROM_ADDRESS }}
+          CLAMAV_IMAGE: ${{ vars.CLAMAV_IMAGE }}
+        run: |
+          set -Eeuo pipefail
+          missing=()
+          for name in \
+            JWT_SECRET MINIO_ACCESS_KEY MINIO_SECRET_KEY \
+            GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GOOGLE_REDIRECT_URL \
+            DATABASE_URL DATABASE_MIGRATION_URL \
+            SMTP_ADDRESS SMTP_USERNAME SMTP_PASSWORD SMTP_FROM_ADDRESS \
+            CLAMAV_IMAGE; do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf 'Missing required production configuration: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
