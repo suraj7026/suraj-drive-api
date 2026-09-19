@@ -3,9 +3,10 @@
 Go HTTP API that powers the [SDrive WebUI](https://github.com/suraj7026/suraj-drive-webui). Built on:
 
 - [`chi`](https://github.com/go-chi/chi) router
-- Google OAuth2 + JWT session cookies
+- PostgreSQL 16 metadata, users, drives, and revocable sessions
+- Google OAuth2 + signed HTTP-only session cookies
 - MinIO / S3-compatible object storage for file content
-- Per-user buckets with presigned upload/download URLs
+- Stable drive/item UUIDs with presigned upload/download URLs
 
 The frontend lives in a separate repo: [`suraj-drive-webui`](https://github.com/suraj7026/suraj-drive-webui).
 
@@ -30,12 +31,13 @@ backend/
 
 ## Local Setup
 
-1. Install Go 1.22+.
-2. From the `backend/` directory, copy `config.yaml` and fill in real Google OAuth credentials, JWT secret, and MinIO access keys (or set the equivalent env vars — see below).
-3. Run the server:
+1. Install Go 1.25.13+ and PostgreSQL 16.
+2. From the `backend/` directory, set Google OAuth, JWT, PostgreSQL, and MinIO credentials through environment variables.
+3. Apply the database migrations, then run the server:
 
    ```bash
    cd backend
+   DATABASE_URL='postgres://...' go run ./cmd/migrate up
    go run ./cmd/server
    ```
 
@@ -61,6 +63,7 @@ Key settings:
 | `server` | `port` (4001), `frontend_url` (used for CORS + OAuth redirect).       |
 | `google` | OAuth client ID/secret, callback URL, optional `allowed_domain`.      |
 | `jwt`    | Signing secret, session expiry in hours.                              |
+| `database` | App URL, optional migration-owner URL, pool sizes, and health timeouts. |
 | `minio`  | Endpoint, public endpoint, access/secret keys, bucket prefix, region. |
 
 ## API Surface
@@ -68,24 +71,31 @@ Key settings:
 Public:
 
 - `GET  /api/health`
+- `GET  /api/ready`
 - `GET  /api/auth/google/login`
 - `GET  /api/auth/google/callback`
-- `POST /api/auth/logout`
 
 Authenticated (JWT cookie):
 
 - `GET    /api/auth/me`
+- `POST   /api/auth/logout`
 - `GET    /api/files`
 - `POST   /api/files/upload`
 - `DELETE /api/files`
 - `POST   /api/files/copy`
 - `GET    /api/files/presign/download`
 - `GET    /api/files/presign/upload`
+- `POST   /api/files/upload/complete`
 - `POST   /api/folders`
 - `DELETE /api/folders`
 - `GET    /api/search`
+- `POST   /api/items/{itemID}/trash`
+- `POST   /api/items/{itemID}/restore`
+- `POST   /api/metadata/reconcile`
 
 ## Notes
 
 - The backend must allow the frontend origin in CORS via `server.frontend_url` / `SERVER_FRONTEND_URL`.
-- Each authenticated user is mapped to a dedicated MinIO bucket (`bucket_prefix` + user identifier).
+- PostgreSQL is the source of truth for identity, hierarchy, search, trash, and sessions. MinIO stores blob bytes only.
+- Existing per-user MinIO buckets are reconciled idempotently during the first database-backed login; objects are not moved or deleted.
+- Use `go run ./cmd/provision-db-role` with `DATABASE_ADMIN_URL` and `DATABASE_APP_PASSWORD` to create/update the least-privilege `drive_app` role. Store the resulting app URL as `DATABASE_URL`; keep the migration-owner URL separate.

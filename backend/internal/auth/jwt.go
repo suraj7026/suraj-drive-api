@@ -21,7 +21,7 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-func IssueJWT(secret, subject, email, name, picture string, expiryHrs int) (string, error) {
+func IssueJWT(secret, subject, sessionToken, email, name, picture string, expiryHrs int) (string, error) {
 	now := time.Now()
 	claims := Claims{
 		Email:   email,
@@ -29,6 +29,7 @@ func IssueJWT(secret, subject, email, name, picture string, expiryHrs int) (stri
 		Picture: picture,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   subject,
+			ID:        sessionToken,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(time.Duration(expiryHrs) * time.Hour)),
 			Issuer:    "surajdrive-backend",

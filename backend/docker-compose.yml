@@ -7,6 +7,10 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-replace-with-google-client-secret}
       GOOGLE_REDIRECT_URL: ${GOOGLE_REDIRECT_URL:-http://localhost:4001/api/auth/google/callback}
       JWT_SECRET: ${JWT_SECRET:-replace-with-a-strong-random-secret}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      DATABASE_MIGRATION_URL: ${DATABASE_MIGRATION_URL:-}
+      DATABASE_MAX_CONNECTIONS: ${DATABASE_MAX_CONNECTIONS:-20}
+      DATABASE_MIN_CONNECTIONS: ${DATABASE_MIN_CONNECTIONS:-2}
       MINIO_ENDPOINT: ${MINIO_ENDPOINT:-s3.sudarshanrajagopalan.one}
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-s3.sudarshanrajagopalan.one}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-replace-with-minio-access-key}

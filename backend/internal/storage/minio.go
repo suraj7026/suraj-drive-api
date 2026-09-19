@@ -3,12 +3,16 @@ package storage
 import (
 	"context"
 	"crypto/sha1"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"net/http"
 	"net/url"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,6 +41,28 @@ type MinIOClient struct {
 	presignClient *minio.Client
 	bucketPrefix  string
 	region        string
+}
+
+type LegacyObject struct {
+	Key          string
+	Size         int64
+	ETag         string
+	ContentType  string
+	LastModified time.Time
+	FolderMarker bool
+}
+
+type MultipartPart struct {
+	Number int
+	ETag   string
+	Size   int64
+}
+
+type AuditObject struct {
+	Bucket    string
+	Key       string
+	SizeBytes int64
+	ETag      string
 }
 
 func NewMinIOClient(cfg *config.Config) (*MinIOClient, error) {
@@ -132,6 +158,84 @@ func (m *MinIOClient) EnsureBucket(ctx context.Context, bucket string) error {
 	return nil
 }
 
+func (m *MinIOClient) HealthCheck(ctx context.Context) error {
+	_, err := m.client.ListBuckets(ctx)
+	return err
+}
+
+func (m *MinIOClient) ListLegacyObjects(ctx context.Context, bucket string) ([]LegacyObject, error) {
+	objects := make([]LegacyObject, 0)
+	for object := range m.client.ListObjects(ctx, bucket, minio.ListObjectsOptions{Recursive: true}) {
+		if object.Err != nil {
+			return nil, object.Err
+		}
+		if object.Key == "" || strings.HasSuffix(object.Key, "/") || isInternalObject(object.Key) {
+			continue
+		}
+
+		contentType := object.ContentType
+		if contentType == "" {
+			contentType = mime.TypeByExtension(path.Ext(object.Key))
+		}
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		objects = append(objects, LegacyObject{
+			Key:          object.Key,
+			Size:         object.Size,
+			ETag:         strings.Trim(object.ETag, "\""),
+			ContentType:  contentType,
+			LastModified: object.LastModified,
+			FolderMarker: isKeepObject(object.Key),
+		})
+	}
+	return objects, nil
+}
+
+func (m *MinIOClient) ListAuditObjects(ctx context.Context, bucket string) ([]AuditObject, error) {
+	objects := make([]AuditObject, 0)
+	for object := range m.client.ListObjects(ctx, bucket, minio.ListObjectsOptions{Recursive: true}) {
+		if object.Err != nil {
+			return nil, object.Err
+		}
+		if object.Key == "" || strings.HasSuffix(object.Key, "/") || isKeepObject(object.Key) ||
+			strings.HasPrefix(object.Key, PreviewsPrefix) || strings.HasPrefix(object.Key, ".uploads/") || strings.HasPrefix(object.Key, ".trash/") {
+			continue
+		}
+		objects = append(objects, AuditObject{Bucket: bucket, Key: object.Key, SizeBytes: object.Size, ETag: strings.Trim(object.ETag, "\"")})
+	}
+	return objects, nil
+}
+
+func (m *MinIOClient) StatLegacyObject(ctx context.Context, bucket, key string) (LegacyObject, error) {
+	normalizedKey, err := normalizeObjectKey(key)
+	if err != nil {
+		return LegacyObject{}, err
+	}
+	object, err := m.client.StatObject(ctx, bucket, normalizedKey, minio.StatObjectOptions{})
+	if err != nil {
+		if isExistenceProbeMiss(err) {
+			return LegacyObject{}, ErrObjectNotFound
+		}
+		return LegacyObject{}, err
+	}
+	contentType := object.ContentType
+	if contentType == "" {
+		contentType = mime.TypeByExtension(path.Ext(object.Key))
+	}
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return LegacyObject{
+		Key:          object.Key,
+		Size:         object.Size,
+		ETag:         strings.Trim(object.ETag, "\""),
+		ContentType:  contentType,
+		LastModified: object.LastModified,
+		FolderMarker: isKeepObject(object.Key),
+	}, nil
+}
+
 func (m *MinIOClient) ListObjects(ctx context.Context, bucket, prefix string, offset, limit int) (model.ListResponse, error) {
 	normalizedPrefix, err := normalizePrefix(prefix, true)
 	if err != nil {
@@ -151,7 +255,7 @@ func (m *MinIOClient) ListObjects(ctx context.Context, bucket, prefix string, of
 			continue
 		}
 
-		if isPreviewArtifact(object.Key) {
+		if isInternalObject(object.Key) {
 			continue
 		}
 
@@ -204,6 +308,103 @@ func (m *MinIOClient) PutObject(ctx context.Context, bucket, key, contentType st
 	return err
 }
 
+func (m *MinIOClient) NewMultipartUpload(ctx context.Context, bucket, key, contentType string) (string, error) {
+	normalizedKey, err := normalizeObjectKey(key)
+	if err != nil {
+		return "", err
+	}
+	core := minio.Core{Client: m.client}
+	uploadID, err := core.NewMultipartUpload(ctx, bucket, normalizedKey, minio.PutObjectOptions{ContentType: contentType})
+	if err != nil {
+		return "", err
+	}
+	return uploadID, nil
+}
+
+func (m *MinIOClient) PresignedUploadPartURL(ctx context.Context, bucket, key, uploadID string, partNumber int, ttl time.Duration) (string, error) {
+	return m.PresignedUploadPartURLForSize(ctx, bucket, key, uploadID, partNumber, ttl, -1)
+}
+
+func (m *MinIOClient) PresignedUploadPartURLForSize(ctx context.Context, bucket, key, uploadID string, partNumber int, ttl time.Duration, size int64) (string, error) {
+	normalizedKey, err := normalizeObjectKey(key)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(uploadID) == "" || partNumber < 1 || partNumber > 10_000 {
+		return "", fmt.Errorf("%w: invalid multipart upload or part", ErrInvalidPath)
+	}
+	params := url.Values{}
+	params.Set("uploadId", uploadID)
+	params.Set("partNumber", fmt.Sprintf("%d", partNumber))
+	headers := http.Header{}
+	if size >= 0 {
+		headers.Set("Content-Length", strconv.FormatInt(size, 10))
+	}
+	partURL, err := m.presignClient.PresignHeader(ctx, http.MethodPut, bucket, normalizedKey, ttl, params, headers)
+	if err != nil {
+		return "", err
+	}
+	return partURL.String(), nil
+}
+
+func (m *MinIOClient) ListMultipartParts(ctx context.Context, bucket, key, uploadID string) ([]MultipartPart, error) {
+	normalizedKey, err := normalizeObjectKey(key)
+	if err != nil {
+		return nil, err
+	}
+	core := minio.Core{Client: m.client}
+	parts := make([]MultipartPart, 0)
+	marker := 0
+	for {
+		result, err := core.ListObjectParts(ctx, bucket, normalizedKey, uploadID, marker, 1000)
+		if err != nil {
+			return nil, err
+		}
+		for _, part := range result.ObjectParts {
+			parts = append(parts, MultipartPart{
+				Number: part.PartNumber,
+				ETag:   strings.Trim(part.ETag, "\""),
+				Size:   part.Size,
+			})
+		}
+		if !result.IsTruncated {
+			break
+		}
+		marker = result.NextPartNumberMarker
+	}
+	return parts, nil
+}
+
+func (m *MinIOClient) CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID, contentType string, parts []MultipartPart) error {
+	normalizedKey, err := normalizeObjectKey(key)
+	if err != nil {
+		return err
+	}
+	if len(parts) == 0 {
+		return fmt.Errorf("multipart upload has no parts")
+	}
+	completed := make([]minio.CompletePart, 0, len(parts))
+	for _, part := range parts {
+		completed = append(completed, minio.CompletePart{PartNumber: part.Number, ETag: part.ETag})
+	}
+	core := minio.Core{Client: m.client}
+	_, err = core.CompleteMultipartUpload(ctx, bucket, normalizedKey, uploadID, completed, minio.PutObjectOptions{ContentType: contentType})
+	return err
+}
+
+func (m *MinIOClient) AbortMultipartUpload(ctx context.Context, bucket, key, uploadID string) error {
+	normalizedKey, err := normalizeObjectKey(key)
+	if err != nil {
+		return err
+	}
+	core := minio.Core{Client: m.client}
+	return core.AbortMultipartUpload(ctx, bucket, normalizedKey, uploadID)
+}
+
+func IsMultipartUploadNotFound(err error) bool {
+	return minio.ToErrorResponse(err).Code == "NoSuchUpload"
+}
+
 // GetObject reads the full contents of an object into memory. Intended for
 // small-to-medium objects (e.g. HEIC source files for preview generation);
 // callers are responsible for keeping object sizes reasonable.
@@ -228,6 +429,63 @@ func (m *MinIOClient) GetObject(ctx context.Context, bucket, key string) ([]byte
 		return nil, err
 	}
 	return data, nil
+}
+
+// SHA256Object streams an object through a digest without retaining the blob in
+// application memory. Reading through EOF also makes MinIO/S3 transport errors
+// part of upload completion rather than silently recording partial metadata.
+func (m *MinIOClient) SHA256Object(ctx context.Context, bucket, key string) ([]byte, error) {
+	normalizedKey, err := normalizeObjectKey(key)
+	if err != nil {
+		return nil, err
+	}
+	object, err := m.client.GetObject(ctx, bucket, normalizedKey, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer object.Close()
+	digest := sha256.New()
+	if _, err := io.Copy(digest, object); err != nil {
+		if isExistenceProbeMiss(err) {
+			return nil, ErrObjectNotFound
+		}
+		return nil, err
+	}
+	return digest.Sum(nil), nil
+}
+
+// DetectObjectContentType reads only the signature bytes used by
+// http.DetectContentType. The result is derived from the object bytes rather
+// than browser-provided metadata.
+func (m *MinIOClient) DetectObjectContentType(ctx context.Context, bucket, key string) (string, error) {
+	normalizedKey, err := normalizeObjectKey(key)
+	if err != nil {
+		return "", err
+	}
+	object, err := m.client.GetObject(ctx, bucket, normalizedKey, minio.GetObjectOptions{})
+	if err != nil {
+		return "", err
+	}
+	defer object.Close()
+	prefix, err := io.ReadAll(io.LimitReader(object, 512))
+	if err != nil {
+		if isExistenceProbeMiss(err) {
+			return "", ErrObjectNotFound
+		}
+		return "", err
+	}
+	if len(prefix) == 0 {
+		return "application/octet-stream", nil
+	}
+	return http.DetectContentType(prefix), nil
+}
+
+func (m *MinIOClient) OpenObject(ctx context.Context, bucket, key string) (io.ReadCloser, error) {
+	normalizedKey, err := normalizeObjectKey(key)
+	if err != nil {
+		return nil, err
+	}
+	return m.client.GetObject(ctx, bucket, normalizedKey, minio.GetObjectOptions{})
 }
 
 // ObjectExists reports whether the given object exists in the bucket.
@@ -321,7 +579,52 @@ func (m *MinIOClient) CopyObject(ctx context.Context, bucket, srcKey, dstKey str
 	return resolvedDst, nil
 }
 
+func (m *MinIOClient) CopyObjectBetweenBuckets(ctx context.Context, srcBucket, srcKey, dstBucket, dstKey string) error {
+	return m.CopyObjectBetweenBucketsIfMatch(ctx, srcBucket, srcKey, dstBucket, dstKey, "")
+}
+
+func (m *MinIOClient) CopyObjectBetweenBucketsIfMatch(ctx context.Context, srcBucket, srcKey, dstBucket, dstKey, sourceETag string) error {
+	return m.CopyObjectBetweenBucketsIfMatchWithContentType(ctx, srcBucket, srcKey, dstBucket, dstKey, sourceETag, "")
+}
+
+func (m *MinIOClient) CopyObjectBetweenBucketsIfMatchWithContentType(ctx context.Context, srcBucket, srcKey, dstBucket, dstKey, sourceETag, contentType string) error {
+	normalizedSrc, err := normalizeObjectKey(srcKey)
+	if err != nil {
+		return err
+	}
+	normalizedDst, err := normalizeObjectKey(dstKey)
+	if err != nil {
+		return err
+	}
+	exists, err := m.objectExists(ctx, srcBucket, normalizedSrc)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrObjectNotFound
+	}
+	destinationExists, err := m.objectExists(ctx, dstBucket, normalizedDst)
+	if err != nil {
+		return err
+	}
+	if destinationExists {
+		return fmt.Errorf("%w: immutable destination already exists", ErrInvalidPath)
+	}
+	source := minio.CopySrcOptions{Bucket: srcBucket, Object: normalizedSrc, MatchETag: strings.Trim(sourceETag, "\"")}
+	destination := minio.CopyDestOptions{Bucket: dstBucket, Object: normalizedDst}
+	if strings.TrimSpace(contentType) != "" {
+		destination.ReplaceMetadata = true
+		destination.UserMetadata = map[string]string{"Content-Type": strings.TrimSpace(contentType)}
+	}
+	_, err = m.client.CopyObject(ctx, destination, source)
+	return err
+}
+
 func (m *MinIOClient) PresignedGetURL(ctx context.Context, bucket, key string, ttl time.Duration) (string, error) {
+	return m.PresignedGetURLWithDisposition(ctx, bucket, key, ttl, "", false)
+}
+
+func (m *MinIOClient) PresignedGetURLWithDisposition(ctx context.Context, bucket, key string, ttl time.Duration, filename string, inline bool) (string, error) {
 	normalizedKey, err := normalizeObjectKey(key)
 	if err != nil {
 		return "", err
@@ -335,7 +638,15 @@ func (m *MinIOClient) PresignedGetURL(ctx context.Context, bucket, key string, t
 		return "", ErrObjectNotFound
 	}
 
-	urlValue, err := m.presignClient.PresignedGetObject(ctx, bucket, normalizedKey, ttl, url.Values{})
+	params := url.Values{}
+	if strings.TrimSpace(filename) != "" {
+		disposition := "attachment"
+		if inline {
+			disposition = "inline"
+		}
+		params.Set("response-content-disposition", mime.FormatMediaType(disposition, map[string]string{"filename": filename}))
+	}
+	urlValue, err := m.presignClient.PresignedGetObject(ctx, bucket, normalizedKey, ttl, params)
 	if err != nil {
 		return "", err
 	}
@@ -343,12 +654,23 @@ func (m *MinIOClient) PresignedGetURL(ctx context.Context, bucket, key string, t
 }
 
 func (m *MinIOClient) PresignedPutURL(ctx context.Context, bucket, key string, ttl time.Duration) (string, error) {
+	return m.PresignedPutURLForSize(ctx, bucket, key, ttl, -1)
+}
+
+func (m *MinIOClient) PresignedPutURLForSize(ctx context.Context, bucket, key string, ttl time.Duration, size int64) (string, error) {
 	normalizedKey, err := normalizeObjectKey(key)
 	if err != nil {
 		return "", err
 	}
 
-	urlValue, err := m.presignClient.PresignedPutObject(ctx, bucket, normalizedKey, ttl)
+	if size < -1 {
+		return "", fmt.Errorf("invalid expected upload size")
+	}
+	headers := http.Header{}
+	if size >= 0 {
+		headers.Set("Content-Length", strconv.FormatInt(size, 10))
+	}
+	urlValue, err := m.presignClient.PresignHeader(ctx, http.MethodPut, bucket, normalizedKey, ttl, nil, headers)
 	if err != nil {
 		return "", err
 	}
@@ -383,7 +705,7 @@ func (m *MinIOClient) Search(ctx context.Context, bucket, prefix, query string, 
 		if object.Err != nil {
 			return model.SearchResponse{}, object.Err
 		}
-		if object.Key == "" || strings.HasSuffix(object.Key, "/") || isKeepObject(object.Key) || isPreviewArtifact(object.Key) {
+		if object.Key == "" || strings.HasSuffix(object.Key, "/") || isKeepObject(object.Key) || isInternalObject(object.Key) {
 			continue
 		}
 		if strings.Contains(strings.ToLower(object.Key), needle) {
@@ -450,17 +772,13 @@ func (m *MinIOClient) objectExists(ctx context.Context, bucket, key string) (boo
 	return true, nil
 }
 
-// isExistenceProbeMiss reports whether a StatObject error means "object does not exist"
-// for the purposes of an existence probe. Per S3 spec, when the caller lacks both
-// s3:GetObject and s3:ListBucket on a bucket, HEAD on a non-existent key returns
-// 403 AccessDenied instead of 404 NoSuchKey to avoid leaking existence info. The
-// same response can also come from a proxy/CDN intermittently. We treat AccessDenied
-// the same as NoSuchKey here; if the caller actually lacks write permission, the
-// subsequent PutObject / presigned PUT will surface that error clearly.
+// isExistenceProbeMiss reports only definitive not-found responses. AccessDenied
+// is intentionally propagated: treating it as absence can generate upload URLs for
+// an unauthorized bucket and hide a real permissions or infrastructure failure.
 func isExistenceProbeMiss(err error) bool {
 	response := minio.ToErrorResponse(err)
 	switch response.Code {
-	case "NoSuchKey", "NoSuchBucket", "NoSuchObject", "NotFound", "AccessDenied":
+	case "NoSuchKey", "NoSuchBucket", "NoSuchObject", "NotFound":
 		return true
 	default:
 		return false
@@ -513,6 +831,10 @@ func isKeepObject(key string) bool {
 
 func isPreviewArtifact(key string) bool {
 	return strings.HasPrefix(key, PreviewsPrefix)
+}
+
+func isInternalObject(key string) bool {
+	return isPreviewArtifact(key) || strings.HasPrefix(key, ".objects/") || strings.HasPrefix(key, ".uploads/") || strings.HasPrefix(key, ".trash/")
 }
 
 func addFolder(seen map[string]struct{}, folders *[]model.FolderEntry, prefix string) {

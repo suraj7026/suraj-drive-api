@@ -7,8 +7,15 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: drive-api-production
+  cancel-in-progress: false
+
 jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
   build-and-deploy:
+    needs: verify
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +32,9 @@ jobs:
         with:
           context: ./backend
           push: true
-          tags: ghcr.io/suraj7026/drive-api:latest
+          tags: |
+            ghcr.io/suraj7026/drive-api:${{ github.sha }}
+            ghcr.io/suraj7026/drive-api:latest
 
       - name: Local Deploy
         env:
@@ -35,19 +44,70 @@ jobs:
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REDIRECT_URL: ${{ secrets.GOOGLE_REDIRECT_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_MIGRATION_URL: ${{ secrets.DATABASE_MIGRATION_URL }}
+          SMTP_ADDRESS: ${{ secrets.SMTP_ADDRESS }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SMTP_FROM_ADDRESS: ${{ secrets.SMTP_FROM_ADDRESS }}
+          CLAMAV_IMAGE: ${{ vars.CLAMAV_IMAGE }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
+          set -Eeuo pipefail
           mkdir -p ~/drive/api
           cd ~/drive/api
 
-          echo "JWT_SECRET=${JWT_SECRET}" > .env
-          echo "MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}" >> .env
-          echo "MINIO_SECRET_KEY=${MINIO_SECRET_KEY}" >> .env
-          echo "GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}" >> .env
-          echo "GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}" >> .env
-          echo "GOOGLE_REDIRECT_URL=${GOOGLE_REDIRECT_URL}" >> .env
+          rollback_deploy() {
+            echo "Deployment failed; restoring the previous compose configuration"
+            if [ -f .env.rollback ] && [ -f docker-compose.yml.rollback ]; then
+              mv .env.rollback .env
+              mv docker-compose.yml.rollback docker-compose.yml
+              docker compose up -d || true
+            fi
+          }
+          trap rollback_deploy ERR
+
+          if [ -f .env ] && [ -f docker-compose.yml ]; then
+            cp .env .env.rollback
+            cp docker-compose.yml docker-compose.yml.rollback
+          fi
+
+          printf '%s\n' \
+            "JWT_SECRET=${JWT_SECRET}" \
+            "MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}" \
+            "MINIO_SECRET_KEY=${MINIO_SECRET_KEY}" \
+            "GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}" \
+            "GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}" \
+            "GOOGLE_REDIRECT_URL=${GOOGLE_REDIRECT_URL}" \
+            "DATABASE_URL=${DATABASE_URL}" \
+            "NOTIFICATIONS_SMTP_ADDRESS=${SMTP_ADDRESS:?SMTP_ADDRESS secret is required}" \
+            "NOTIFICATIONS_SMTP_USERNAME=${SMTP_USERNAME}" \
+            "NOTIFICATIONS_SMTP_PASSWORD=${SMTP_PASSWORD}" \
+            "NOTIFICATIONS_FROM_ADDRESS=${SMTP_FROM_ADDRESS:?SMTP_FROM_ADDRESS secret is required}" \
+            "CLAMAV_IMAGE=${CLAMAV_IMAGE:?CLAMAV_IMAGE repository variable is required}" \
+            "IMAGE_TAG=${IMAGE_TAG}" > .env
           chmod 600 .env
 
           cp "$GITHUB_WORKSPACE/deploy/docker-compose.yml" ./docker-compose.yml
 
           docker compose pull
+          docker run --rm --network surajdrive_net \
+            -e DATABASE_URL="${DATABASE_MIGRATION_URL}" \
+            ghcr.io/suraj7026/drive-api:${IMAGE_TAG} ./migrate up
           docker compose up -d
+
+          ready=false
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error http://127.0.0.1:4001/api/ready >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 5
+          done
+          if [ "$ready" != true ]; then
+            docker compose logs --tail=200
+            false
+          fi
+
+          trap - ERR
+          rm -f .env.rollback docker-compose.yml.rollback

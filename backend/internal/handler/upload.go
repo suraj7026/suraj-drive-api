@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"surajdrive/backend/internal/model"
+	"surajdrive/backend/internal/validation"
 )
 
 const maxServerSideUpload = 10 << 20
@@ -38,13 +40,17 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	fileName := path.Base(header.Filename)
-	if fileName == "." || fileName == "/" || fileName == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("file name is required"))
+	fileName := path.Base(strings.ReplaceAll(header.Filename, "\\", "/"))
+	if err := validation.ItemName(fileName); err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 
 	prefix := r.FormValue("prefix")
+	if err := validation.ItemPath(strings.TrimSuffix(prefix, "/"), true); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	requestedKey := fileName
 	if strings.TrimSpace(prefix) != "" {
 		requestedKey = path.Join(prefix, fileName)
@@ -65,8 +71,31 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
+	if err := h.recordObjectMetadata(r, resolvedKey); err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
 
 	writeJSON(w, http.StatusCreated, map[string]string{"key": resolvedKey})
+}
+
+func (h *FileHandler) CompletePresignedUpload(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Key) == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("key is required"))
+		return
+	}
+	if err := validation.ItemPath(body.Key, false); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := h.recordObjectMetadata(r, body.Key); err != nil {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"key": body.Key, "status": "ready"})
 }
 
 func (h *FileHandler) PresignUpload(w http.ResponseWriter, r *http.Request) {
@@ -79,6 +108,10 @@ func (h *FileHandler) PresignUpload(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("key")
 	if key == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("key is required"))
+		return
+	}
+	if err := validation.ItemPath(key, false); err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 

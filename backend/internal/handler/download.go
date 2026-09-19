@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"path"
 	"strconv"
 	"time"
 
@@ -30,7 +31,7 @@ func (h *FileHandler) PresignDownload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	urlValue, err := h.store.PresignedGetURL(r.Context(), bucket, key, time.Duration(ttlMinutes)*time.Minute)
+	urlValue, err := h.store.PresignedGetURLWithDisposition(r.Context(), bucket, key, time.Duration(ttlMinutes)*time.Minute, path.Base(key), false)
 	if err != nil {
 		writeStorageError(w, err)
 		return
