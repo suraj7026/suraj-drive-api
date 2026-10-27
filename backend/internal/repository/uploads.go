@@ -38,6 +38,7 @@ type UploadReservation struct {
 	ExpectedSHA256  string    `json:"expected_sha256,omitempty"`
 	FinalStorageKey string    `json:"-"`
 	ProcessingStage string    `json:"processing_stage,omitempty"`
+	FailureMessage  string    `json:"failure_message,omitempty"`
 }
 
 type ReserveUploadInput struct {
@@ -524,12 +525,14 @@ func (m *Metadata) ReplaceUploadParts(ctx context.Context, drivePublicID, userPu
 		if part.Number < 1 || part.Number > 10_000 || part.Size <= 0 || strings.TrimSpace(part.ETag) == "" {
 			return fmt.Errorf("invalid upload part")
 		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO drive.upload_part (upload_session_id, part_number, storage_etag, size_bytes)
-			VALUES ($1, $2, $3, $4)
-		`, sessionID, part.Number, part.ETag, part.Size); err != nil {
-			return fmt.Errorf("record upload part: %w", err)
-		}
+	}
+	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"drive", "upload_part"},
+		[]string{"upload_session_id", "part_number", "storage_etag", "size_bytes"},
+		pgx.CopyFromSlice(len(parts), func(index int) ([]any, error) {
+			part := parts[index]
+			return []any{sessionID, part.Number, part.ETag, part.Size}, nil
+		})); err != nil {
+		return fmt.Errorf("record upload parts: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit upload part sync: %w", err)
@@ -710,7 +713,7 @@ func (m *Metadata) CompleteUpload(ctx context.Context, input CompleteUploadInput
 	if reservation.Status != "initiated" && reservation.Status != "uploading" && reservation.Status != "completing" {
 		return UploadReservation{}, ErrUploadState
 	}
-	if !reservation.ExpiresAt.After(time.Now()) {
+	if reservation.Status != "completing" && !reservation.ExpiresAt.After(time.Now()) {
 		return UploadReservation{}, ErrUploadState
 	}
 	if strings.TrimSpace(input.ETag) == "" {

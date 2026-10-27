@@ -176,3 +176,24 @@ func TestPreviewCannotPublishAfterPurgeClaim(t *testing.T) {
 		t.Fatalf("unavailable preview remains active: %s %v", status, err)
 	}
 }
+
+func TestMalwareLeaseRenewalIsFenced(t *testing.T) {
+	ctx := context.Background()
+	repo, worker := fencedWorkerFixture(t, "malware")
+	claim, err := worker.claim()
+	if err != nil || claim == nil {
+		t.Fatalf("claim: %+v %v", claim, err)
+	}
+	if err := repo.RenewMalwareScanJob(ctx, claim.id, claim.attempt, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RenewMalwareScanJob(ctx, claim.id, claim.attempt+1, time.Minute); !errors.Is(err, ErrJobLeaseLost) {
+		t.Fatalf("wrong attempt renewed: %v", err)
+	}
+	if _, err := repo.pool.Exec(ctx, `UPDATE drive.malware_scan_job SET lease_expires_at = now() - interval '1 second'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RenewMalwareScanJob(ctx, claim.id, claim.attempt, time.Minute); !errors.Is(err, ErrJobLeaseLost) {
+		t.Fatalf("expired lease resurrected: %v", err)
+	}
+}
