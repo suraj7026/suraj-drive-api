@@ -31,7 +31,7 @@ backend/
 
 ## Local Setup
 
-1. Install Go 1.25.13+ and PostgreSQL 16.
+1. Install Go 1.26.10+ and PostgreSQL 16.
 2. From the `backend/` directory, set Google OAuth, JWT, PostgreSQL, and MinIO credentials through environment variables.
 3. Apply the database migrations, then run the server:
 
