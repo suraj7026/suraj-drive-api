@@ -53,16 +53,24 @@ jobs:
           go run ./cmd/provision-db-role
       - name: Start isolated MinIO
         run: |
-          docker run --detach --rm --name drive-ci-minio --publish 9000:9000 \
-            --env MINIO_ROOT_USER=drive-ci --env MINIO_ROOT_PASSWORD=drive-ci-test-only \
-            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+          minio_binary="$RUNNER_TEMP/drive-ci-minio"
+          curl --fail --location --retry 3 --connect-timeout 15 --max-time 180 \
+            --output "$minio_binary" \
+            https://github.com/minio/minio/releases/download/RELEASE.2025-09-07T16-13-09Z/minio.linux-amd64.RELEASE.2025-09-07T16-13-09Z
+          echo "7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f  $minio_binary" | sha256sum --check
+          chmod +x "$minio_binary"
+          MINIO_ROOT_USER=drive-ci MINIO_ROOT_PASSWORD=drive-ci-test-only \
+            "$minio_binary" server "$RUNNER_TEMP/drive-ci-minio-data" \
+              --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 \
+              > "$RUNNER_TEMP/drive-ci-minio.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/drive-ci-minio.pid"
           for attempt in {1..30}; do
             if curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null; then
               exit 0
             fi
             sleep 1
           done
-          docker logs drive-ci-minio
+          cat "$RUNNER_TEMP/drive-ci-minio.log"
           exit 1
       - name: Test with race detector
         run: go test -race ./...
@@ -75,3 +83,9 @@ jobs:
       - name: Build container
         working-directory: .
         run: docker build -t drive-api:${GITHUB_SHA} ./backend
+      - name: Stop isolated MinIO
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/drive-ci-minio.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/drive-ci-minio.pid")" || true
+          fi
