@@ -64,6 +64,9 @@ func TestUploadCompletionUsesFencedImmutableAttemptKeys(t *testing.T) {
 	if publishedKey != second.FinalKey || jobStatus != "succeeded" {
 		t.Fatalf("wrong attempt published: key=%s status=%s", publishedKey, jobStatus)
 	}
+	if err := repo.FailUploadCompletionJob(ctx, second.ID, second.Attempt, errors.New("lost commit acknowledgement")); !errors.Is(err, ErrJobLeaseLost) {
+		t.Fatalf("completed output was eligible for failure cleanup: %v", err)
+	}
 	if _, err := repo.CompleteUpload(ctx, CompleteUploadInput{
 		DrivePublicID: input.DrivePublicID, UserPublicID: input.UserPublicID, UploadID: reservation.ID,
 		ETag: "stale-etag", SizeBytes: input.SizeBytes, MIMEType: input.MIMEType,
@@ -124,5 +127,66 @@ func TestUploadCompletionTerminalFailureQueuesCleanup(t *testing.T) {
 	}
 	if sessionStatus != "failed" || versionState != "failed" || cleanupCount != 1 {
 		t.Fatalf("terminal completion not cleaned up: session=%s version=%s jobs=%d", sessionStatus, versionState, cleanupCount)
+	}
+}
+
+func TestAcceptedCompletionOutlivesTransferReservation(t *testing.T) {
+	ctx := context.Background()
+	repo, input := lifecycleRepository(t)
+	input.ExpectedSHA256 = make([]byte, 32)
+	reservation, err := repo.ReserveUpload(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.QueueUploadCompletion(ctx, input.DrivePublicID, input.UserPublicID, reservation.ID, input.ExpectedSHA256); err != nil {
+		t.Fatal(err)
+	}
+	job, err := repo.ClaimUploadCompletionJob(ctx, time.Minute)
+	if err != nil || job == nil {
+		t.Fatalf("claim: %+v %v", job, err)
+	}
+	if _, err := repo.pool.Exec(ctx, `UPDATE drive.upload_session SET created_at = now() - interval '2 hours', expires_at = now() - interval '1 hour' WHERE public_id = $1::uuid`, reservation.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RenewUploadCompletionJob(ctx, job.ID, job.Attempt, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RenewUploadCompletionJob(ctx, job.ID, job.Attempt+1, time.Minute); !errors.Is(err, ErrJobLeaseLost) {
+		t.Fatalf("stale attempt renewed: %v", err)
+	}
+	completed, err := repo.CompleteUpload(ctx, CompleteUploadInput{
+		DrivePublicID: input.DrivePublicID, UserPublicID: input.UserPublicID, UploadID: reservation.ID,
+		ETag: "sealed", SizeBytes: input.SizeBytes, MIMEType: input.MIMEType,
+		LastModified: time.Now(), SHA256: input.ExpectedSHA256, StorageKey: job.FinalKey,
+		CompletionJobID: job.ID, CompletionAttempt: job.Attempt,
+	})
+	if err != nil || completed.Status != "completed" {
+		t.Fatalf("expired reservation invalidated accepted job: %+v %v", completed, err)
+	}
+	if err := repo.RenewUploadCompletionJob(ctx, job.ID, job.Attempt, time.Minute); !errors.Is(err, ErrJobLeaseLost) {
+		t.Fatalf("completed job renewed: %v", err)
+	}
+}
+
+func TestExpiredCompletionLeaseCannotBeResurrected(t *testing.T) {
+	ctx := context.Background()
+	repo, input := lifecycleRepository(t)
+	input.ExpectedSHA256 = make([]byte, 32)
+	reservation, err := repo.ReserveUpload(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.QueueUploadCompletion(ctx, input.DrivePublicID, input.UserPublicID, reservation.ID, input.ExpectedSHA256); err != nil {
+		t.Fatal(err)
+	}
+	job, err := repo.ClaimUploadCompletionJob(ctx, time.Minute)
+	if err != nil || job == nil {
+		t.Fatalf("claim: %+v %v", job, err)
+	}
+	if _, err := repo.pool.Exec(ctx, `UPDATE drive.upload_completion_job SET lease_expires_at = now() - interval '1 second'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RenewUploadCompletionJob(ctx, job.ID, job.Attempt, time.Minute); !errors.Is(err, ErrJobLeaseLost) {
+		t.Fatalf("expired lease renewed: %v", err)
 	}
 }

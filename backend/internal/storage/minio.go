@@ -616,7 +616,56 @@ func (m *MinIOClient) CopyObjectBetweenBucketsIfMatchWithContentType(ctx context
 		destination.ReplaceMetadata = true
 		destination.UserMetadata = map[string]string{"Content-Type": strings.TrimSpace(contentType)}
 	}
+	info, err := m.client.StatObject(ctx, srcBucket, normalizedSrc, minio.StatObjectOptions{})
+	if err != nil {
+		return err
+	}
+	if source.MatchETag != "" && source.MatchETag != info.ETag {
+		return fmt.Errorf("%w: staging object changed before sealing", ErrInvalidPath)
+	}
+	if info.Size > 5<<30 {
+		return m.copyLargeObject(ctx, source, destination, info, contentType)
+	}
 	_, err = m.client.CopyObject(ctx, destination, source)
+	return err
+}
+
+// Every range is conditioned on the observed ETag. Use the Core API because
+// this SDK version's ComposeObject probes sources with context.Background().
+func (m *MinIOClient) copyLargeObject(ctx context.Context, source minio.CopySrcOptions, destination minio.CopyDestOptions, info minio.ObjectInfo, contentType string) error {
+	if contentType == "" {
+		contentType = info.ContentType
+	}
+	core := minio.Core{Client: m.client}
+	opts := minio.PutObjectOptions{ContentType: contentType, UserMetadata: info.UserMetadata}
+	uploadID, err := core.NewMultipartUpload(ctx, destination.Bucket, destination.Object, opts)
+	if err != nil {
+		return err
+	}
+	completed := false
+	defer func() {
+		if !completed {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+			defer cancel()
+			_ = core.AbortMultipartUpload(cleanupCtx, destination.Bucket, destination.Object, uploadID)
+		}
+	}()
+	const partSize = int64(1 << 30)
+	parts := make([]minio.CompletePart, 0, (info.Size+partSize-1)/partSize)
+	for offset := int64(0); offset < info.Size; offset += partSize {
+		length := partSize
+		if info.Size-offset < length {
+			length = info.Size - offset
+		}
+		part, err := core.CopyObjectPart(ctx, source.Bucket, source.Object, destination.Bucket, destination.Object, uploadID,
+			len(parts)+1, offset, length, map[string]string{"x-amz-copy-source-if-match": "\"" + info.ETag + "\""})
+		if err != nil {
+			return err
+		}
+		parts = append(parts, part)
+	}
+	_, err = core.CompleteMultipartUpload(ctx, destination.Bucket, destination.Object, uploadID, parts, opts)
+	completed = err == nil
 	return err
 }
 

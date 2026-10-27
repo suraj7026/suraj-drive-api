@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -84,13 +85,15 @@ func (m *Metadata) QueueUploadCompletion(ctx context.Context, drivePublicID, use
 			session.expected_size_bytes, session.mime_type, session.status, session.expires_at,
 			session.upload_mode, COALESCE(session.part_size_bytes, 0),
 			COALESCE(session.expected_sha256, ''::bytea), version.state,
-			COALESCE(scan.status, '')
+			COALESCE(scan.status, ''),
+			COALESCE(session.failure_message, completion.last_error, scan.last_error, '')
 		FROM drive.upload_session session
 		JOIN drive.drive_space drive ON drive.id = session.drive_id
 		JOIN drive.user_account owner ON owner.id = session.user_id
 		JOIN drive.item item ON item.id = session.item_id
 		JOIN drive.file_version version ON version.id = session.file_version_id
 		LEFT JOIN drive.malware_scan_job scan ON scan.file_version_id = version.id
+		LEFT JOIN drive.upload_completion_job completion ON completion.upload_session_id = session.id
 		WHERE session.public_id = $1::uuid AND drive.public_id = $2::uuid
 			AND owner.public_id = $3::uuid
 		FOR UPDATE OF session
@@ -98,7 +101,7 @@ func (m *Metadata) QueueUploadCompletion(ctx context.Context, drivePublicID, use
 		&sessionID, &reservation.ID, &reservation.StorageKey, &reservation.Name,
 		&reservation.ExpectedSize, &reservation.MIMEType, &reservation.Status,
 		&reservation.ExpiresAt, &reservation.UploadMode, &reservation.PartSize, &storedSHA,
-		&versionState, &scanStatus,
+		&versionState, &scanStatus, &reservation.FailureMessage,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return UploadReservation{}, ErrUploadNotFound
@@ -109,9 +112,10 @@ func (m *Metadata) QueueUploadCompletion(ctx context.Context, drivePublicID, use
 	if len(storedSHA) != 0 && !bytes.Equal(storedSHA, expectedSHA256) {
 		return UploadReservation{}, ErrUploadIntegrity
 	}
-	if reservation.Status == "completed" || reservation.Status == "completing" {
+	if reservation.Status == "completed" || reservation.Status == "completing" || reservation.Status == "failed" {
 		reservation.ExpectedSHA256 = fmt.Sprintf("%x", storedSHA)
 		reservation.ProcessingStage = uploadProcessingStage(reservation.Status, versionState, scanStatus)
+		reservation.FailureMessage = uploadFailureMessage(reservation.ProcessingStage, reservation.FailureMessage)
 		if err := tx.Commit(ctx); err != nil {
 			return UploadReservation{}, fmt.Errorf("commit upload completion lookup: %w", err)
 		}
@@ -287,4 +291,44 @@ func (m *Metadata) FailUploadCompletionJob(ctx context.Context, jobPublicID stri
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+func (m *Metadata) RenewUploadCompletionJob(ctx context.Context, jobID string, attempt int, lease time.Duration) error {
+	command, err := m.pool.Exec(ctx, `
+  UPDATE drive.upload_completion_job job
+  SET lease_expires_at = clock_timestamp() + make_interval(secs => $3), updated_at = now()
+  FROM drive.upload_session session
+  WHERE job.public_id = $1::uuid AND job.attempts = $2 AND job.status = 'processing'
+   AND job.lease_expires_at > clock_timestamp() AND session.id = job.upload_session_id
+   AND session.status = 'completing'
+ `, jobID, attempt, max(1, int(lease.Seconds())))
+	if err != nil {
+		return fmt.Errorf("renew upload completion lease: %w", err)
+	}
+	if command.RowsAffected() != 1 {
+		return ErrJobLeaseLost
+	}
+	return nil
+}
+
+// Keep internal storage URLs, SQL errors and infrastructure details out of the API.
+func uploadFailureMessage(stage, detail string) string {
+	if stage != "failed" {
+		return ""
+	}
+	lower := strings.ToLower(detail)
+	switch {
+	case strings.Contains(lower, "size limit"), strings.Contains(lower, "streammax"), strings.Contains(lower, "maxfilesize"):
+		return "File exceeds the malware scanner's supported size. Contact the administrator; other files can continue."
+	case strings.Contains(lower, "deadline"), strings.Contains(lower, "timeout"):
+		return "Server verification timed out. Retry this file; other files can continue."
+	case strings.Contains(lower, "clamav"), strings.Contains(lower, "scanner"):
+		return "Malware scanning could not finish. Retry this file or contact the administrator."
+	case strings.Contains(lower, "size does not match"):
+		return "Uploaded size does not match the selected file. Reselect and retry this file."
+	case strings.Contains(lower, "integrity"), strings.Contains(lower, "checksum"):
+		return "Uploaded bytes did not pass integrity verification. Reselect and retry this file."
+	default:
+		return "Server verification failed. Retry this file; other files can continue."
+	}
 }

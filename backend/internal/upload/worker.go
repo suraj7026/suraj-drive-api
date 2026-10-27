@@ -9,13 +9,9 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"surajdrive/backend/internal/joblease"
 	"surajdrive/backend/internal/repository"
 	"surajdrive/backend/internal/storage"
-)
-
-const (
-	jobTimeout = 30 * time.Minute
-	jobLease   = 31 * time.Minute
 )
 
 type Worker struct {
@@ -73,17 +69,27 @@ func (w *Worker) processNext(ctx context.Context) (bool, error) {
 		}
 		return true, w.metadata.CompleteUploadStagingCleanup(ctx, cleanup.JobID)
 	}
-	job, err := w.metadata.ClaimUploadCompletionJob(ctx, jobLease)
+	job, err := w.metadata.ClaimUploadCompletionJob(ctx, joblease.Duration)
 	if err != nil || job == nil {
 		return false, err
 	}
-	workCtx, cancel := context.WithTimeout(ctx, jobTimeout)
+	workCtx, cancel := context.WithTimeout(ctx, joblease.Timeout(30*time.Minute, job.ExpectedSize))
 	defer cancel()
-	if err := w.process(workCtx, job); err != nil {
-		_ = w.deleteObject(context.WithoutCancel(ctx), job.Bucket, job.FinalKey)
+	if err := joblease.Run(workCtx, joblease.Interval, func(renewCtx context.Context) error {
+		return w.metadata.RenewUploadCompletionJob(renewCtx, job.ID, job.Attempt, joblease.Duration)
+	}, func(processCtx context.Context) error { return w.process(processCtx, job) }); err != nil {
+		log.Warn().Err(err).Str("upload_id", job.UploadID).Int("attempt", job.Attempt).Msg("upload verification failed")
 		if failErr := w.metadata.FailUploadCompletionJob(ctx, job.ID, job.Attempt, err); failErr != nil {
+			if errors.Is(failErr, repository.ErrJobLeaseLost) {
+				return true, nil
+			}
 			return true, fmt.Errorf("finalize upload: %v; record failure: %w", err, failErr)
 		}
+		// Fence the failed attempt before deleting its output. A lost commit
+		// acknowledgement may mean this key has already been published.
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		_ = w.deleteObject(cleanupCtx, job.Bucket, job.FinalKey)
+		cancelCleanup()
 	}
 	return true, nil
 }

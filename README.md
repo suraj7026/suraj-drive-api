@@ -99,3 +99,13 @@ Authenticated (JWT cookie):
 - PostgreSQL is the source of truth for identity, hierarchy, search, trash, and sessions. MinIO stores blob bytes only.
 - Existing per-user MinIO buckets are reconciled idempotently during the first database-backed login; objects are not moved or deleted.
 - Use `go run ./cmd/provision-db-role` with `DATABASE_ADMIN_URL` and `DATABASE_APP_PASSWORD` to create/update the least-privilege `drive_app` role. Store the resulting app URL as `DATABASE_URL`; keep the migration-owner URL separate.
+
+## Large and interrupted uploads
+
+Uploads above 16 MiB use direct multipart transfers with an adaptive part size starting at 64 MiB. A file may be at most 5 TiB with the pinned storage SDK, subject to account quota and storage capacity. Active reservations retain their quota and partial chunks for seven days, renewed when new part URLs are requested; cancelling abandoned uploads releases that reservation through the normal cleanup lifecycle. Existing reservations keep their stored part size.
+
+Completion and malware workers renew fenced two-minute leases every 30 seconds. Processing budgets include the baseline (30 minutes for completion, configured timeout for scanning) plus file size at 5 MiB/s. Accepted completion jobs remain valid after the transfer reservation deadline. Sealing objects above 5 GiB uses conditional multipart copy and aborts failed copy attempts. Resume metadata uses a bulk database copy so up to 10,000 parts do not require 10,000 SQL round trips.
+
+Malware scanning remains required in production. Validate the deployed daemon's `StreamMaxLength`, `MaxFileSize` and `MaxScanSize` against the supported individual file sizes; increasing a worker timeout does not raise scanner engine limits. This change does not bypass scanning or certify that ClamAV can fully inspect a 100-GiB object. Unsupported files fail independently with a sanitized message while the frontend queue continues.
+
+Regression coverage uses isolated PostgreSQL databases, synthetic S3 metadata for 5-GiB and 100-GiB objects, and a browser batch of 107 small files with three dropped storage connections. No real hundreds-of-GB transfer was performed.
