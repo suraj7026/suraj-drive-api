@@ -1,7 +1,9 @@
 package pagination
 
 import (
+	"encoding/base64"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -29,8 +31,15 @@ func TestCodecRejectsTamperingAndWrongScope(t *testing.T) {
 		t.Fatalf("encode cursor: %v", err)
 	}
 
+	parts := strings.SplitN(token, ".", 2)
+	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature[0] ^= 0x80
+	tampered := parts[0] + "." + base64.RawURLEncoding.EncodeToString(signature)
 	for name, candidate := range map[string]string{
-		"tampered":    token[:len(token)-1] + "A",
+		"tampered":    tampered,
 		"wrong scope": token,
 	} {
 		scope := "drive:list:root"

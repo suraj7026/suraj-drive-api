@@ -344,3 +344,36 @@ func TestCleanRevisionReadableWhileNewerRevisionQuarantined(t *testing.T) {
 		t.Fatalf("infected revision hid clean file: %+v %v", listing, err)
 	}
 }
+
+func TestResumeSyncsTenThousandParts(t *testing.T) {
+	ctx := context.Background()
+	repo, input := lifecycleRepository(t)
+	input.UploadMode = "multipart"
+	input.PartSize = 8 << 20
+	input.SizeBytes = 10_000 * input.PartSize
+	if _, err := repo.pool.Exec(ctx, `UPDATE drive.user_account SET storage_quota_bytes = $1`, int64(1<<40)); err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := repo.ReserveUpload(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := make([]UploadPart, 10_000)
+	for i := range parts {
+		parts[i] = UploadPart{Number: i + 1, ETag: fmt.Sprintf("part-%d", i+1), Size: 8 << 20}
+	}
+	if err := repo.ReplaceUploadParts(ctx, input.DrivePublicID, input.UserPublicID, reservation.ID, parts); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := repo.GetActiveUpload(ctx, input.DrivePublicID, input.UserPublicID, reservation.ID)
+	if err != nil || len(recovered.UploadedParts) != 10_000 {
+		t.Fatalf("large resume: parts=%d err=%v", len(recovered.UploadedParts), err)
+	}
+	if err := repo.ReplaceUploadParts(ctx, input.DrivePublicID, input.UserPublicID, reservation.ID, parts[:10]); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err = repo.GetActiveUpload(ctx, input.DrivePublicID, input.UserPublicID, reservation.ID)
+	if err != nil || len(recovered.UploadedParts) != 10 {
+		t.Fatalf("resync: parts=%d err=%v", len(recovered.UploadedParts), err)
+	}
+}

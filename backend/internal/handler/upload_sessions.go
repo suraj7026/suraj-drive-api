@@ -31,8 +31,9 @@ type presignedUploadPart struct {
 
 const (
 	multipartUploadThreshold = 16 << 20
-	multipartPartSize        = 8 << 20
+	multipartPartSize        = 64 << 20
 	maxPresignedPartBatch    = 20
+	uploadReservationTTL     = 7 * 24 * time.Hour
 )
 
 func (h *FileHandler) ListUploadReservations(w http.ResponseWriter, r *http.Request) {
@@ -72,6 +73,23 @@ func (h *FileHandler) GetUploadReservation(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		response.UploadedParts = parts
+	} else if reservation.UploadMode == "single" && (reservation.Status == "initiated" || reservation.Status == "uploading") {
+		if err := h.metadata.RenewUpload(r.Context(), principal.DriveID, principal.UserID, reservation.ID, uploadReservationTTL); err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		upload, err := h.metadata.LoadUpload(r.Context(), principal.DriveID, principal.UserID, reservation.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		response.URL, err = h.store.PresignedPutURLForSize(r.Context(), upload.Bucket, upload.StorageKey, 15*time.Minute, upload.ExpectedSize)
+		if err != nil {
+			writeStorageError(w, err)
+			return
+		}
+		response.ExpiresAt = upload.ExpiresAt
+		response.ExpiresIn = "15m"
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -122,6 +140,10 @@ func (h *FileHandler) ReserveUpload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("size_bytes and idempotency_key are required"))
 		return
 	}
+	if body.SizeBytes > 5<<40 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("maximum supported file size is 5 TiB"))
+		return
+	}
 	if strings.TrimSpace(body.MIMEType) == "" {
 		body.MIMEType = "application/octet-stream"
 	}
@@ -147,7 +169,7 @@ func (h *FileHandler) ReserveUpload(w http.ResponseWriter, r *http.Request) {
 		SizeBytes:      body.SizeBytes,
 		MIMEType:       body.MIMEType,
 		IdempotencyKey: body.IdempotencyKey,
-		TTL:            30 * time.Minute,
+		TTL:            uploadReservationTTL,
 		UploadMode:     uploadMode,
 		PartSize:       partSize,
 		ConflictMode:   body.ConflictMode,
@@ -239,7 +261,7 @@ func (h *FileHandler) PresignUploadParts(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, fmt.Errorf("part_numbers must contain 1 to %d entries", maxPresignedPartBatch))
 		return
 	}
-	if err := h.metadata.RenewUpload(r.Context(), principal.DriveID, principal.UserID, uploadID, 45*time.Minute); err != nil {
+	if err := h.metadata.RenewUpload(r.Context(), principal.DriveID, principal.UserID, uploadID, uploadReservationTTL); err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
