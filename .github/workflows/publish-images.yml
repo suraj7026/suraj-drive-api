@@ -1,0 +1,50 @@
+name: Publish Drive API candidate
+on:
+  push:
+    branches: [migration/image-publication]
+    paths: [.github/workflows/publish-images.yml, deploy/publication/**]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: drive-api-candidate-publication
+  cancel-in-progress: false
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+  publish:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Reject sensitive build-context files
+        run: |
+          test -z "$(find backend -type f \( -name '.env' -o -name '.env.local' -o -name '*.pem' -o -name '*.key' \) -print)"
+      - name: Build and check non-root candidate
+        run: |
+          set -Eeuo pipefail
+          image="ghcr.io/suraj7026/drive-api:candidate-$GITHUB_SHA"
+          docker build --platform linux/amd64 \
+            --label org.opencontainers.image.source=https://github.com/suraj7026/suraj-drive-api \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            -t "$image" ./backend
+          docker run --name drive-api-image-check --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges --entrypoint /bin/sh "$image" \
+            -c 'test "$(id -u)" != 0 && test -x /app/server && test -x /app/migrate && test ! -e /app/.env'
+      - name: Publish candidate without changing latest or production
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io' EXIT
+          image="ghcr.io/suraj7026/drive-api:candidate-$GITHUB_SHA"
+          docker push "$image"
+          digest=$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}' | jq -r .digest)
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          printf 'PUBLISHED_IMAGE=ghcr.io/suraj7026/drive-api@%s\n' "$digest"
+          printf 'Candidate: `ghcr.io/suraj7026/drive-api@%s`\n' "$digest" >> "$GITHUB_STEP_SUMMARY"
