@@ -28,6 +28,7 @@ func main() {
 
 	authHandler := handler.NewAuthHandler(cfg, store)
 	fileHandler := handler.NewFileHandler(store)
+	multipartHandler := handler.NewMultipartHandler(store, cfg.JWT.Secret)
 
 	r := chi.NewRouter()
 	r.Use(chimiddleware.RequestID)
@@ -54,6 +55,8 @@ func main() {
 
 		r.Get("/files", fileHandler.List)
 		r.Post("/files/upload", fileHandler.Upload)
+		r.Post("/files/multipart", multipartHandler.Begin)
+		r.Post("/files/multipart/{action}", multipartHandler.Update)
 		r.Delete("/files", fileHandler.Delete)
 		r.Post("/files/copy", fileHandler.Copy)
 		r.Get("/files/presign/download", fileHandler.PresignDownload)
