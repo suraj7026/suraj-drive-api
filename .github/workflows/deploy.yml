@@ -78,32 +78,30 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REDIRECT_URL: ${{ secrets.GOOGLE_REDIRECT_URL }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DATABASE_MIGRATION_URL: ${{ secrets.DATABASE_MIGRATION_URL }}
-          SMTP_ADDRESS: ${{ secrets.SMTP_ADDRESS }}
-          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          SMTP_FROM_ADDRESS: ${{ secrets.SMTP_FROM_ADDRESS }}
           CLAMAV_IMAGE: ${{ vars.CLAMAV_IMAGE }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           set -Eeuo pipefail
+          if [ -z "${DATABASE_URL}" ]; then
+            echo "DATABASE_URL secret is required" >&2
+            exit 1
+          fi
           mkdir -p ~/drive/api
           cd ~/drive/api
 
+          stopped=false
+          PREVIOUS_CONTAINER=""
           rollback_deploy() {
-            echo "Deployment failed; restoring the previous compose configuration"
-            if [ -f .env.rollback ] && [ -f docker-compose.yml.rollback ]; then
-              mv .env.rollback .env
-              mv docker-compose.yml.rollback docker-compose.yml
-              docker compose up -d || true
+            if [ "$stopped" != true ] || [ -z "${PREVIOUS_CONTAINER}" ]; then
+              echo "Deployment failed before replacing the running API"
+              return
             fi
+            echo "Deployment failed; restoring the previous API container"
+            docker rm -f surajdrive-backend >/dev/null 2>&1 || true
+            docker rename "$PREVIOUS_CONTAINER" surajdrive-backend
+            docker start surajdrive-backend || true
           }
           trap rollback_deploy ERR
-
-          if [ -f .env ] && [ -f docker-compose.yml ]; then
-            cp .env .env.rollback
-            cp docker-compose.yml docker-compose.yml.rollback
-          fi
 
           printf '%s\n' \
             "JWT_SECRET=${JWT_SECRET}" \
@@ -113,10 +111,6 @@ jobs:
             "GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}" \
             "GOOGLE_REDIRECT_URL=${GOOGLE_REDIRECT_URL}" \
             "DATABASE_URL=${DATABASE_URL}" \
-            "NOTIFICATIONS_SMTP_ADDRESS=${SMTP_ADDRESS:?SMTP_ADDRESS secret is required}" \
-            "NOTIFICATIONS_SMTP_USERNAME=${SMTP_USERNAME}" \
-            "NOTIFICATIONS_SMTP_PASSWORD=${SMTP_PASSWORD}" \
-            "NOTIFICATIONS_FROM_ADDRESS=${SMTP_FROM_ADDRESS:?SMTP_FROM_ADDRESS secret is required}" \
             "CLAMAV_IMAGE=${CLAMAV_IMAGE:?CLAMAV_IMAGE repository variable is required}" \
             "IMAGE_TAG=${IMAGE_TAG}" > .env
           chmod 600 .env
@@ -125,8 +119,15 @@ jobs:
 
           docker compose pull
           docker run --rm --network surajdrive_net \
-            -e DATABASE_URL="${DATABASE_MIGRATION_URL}" \
+            -e DATABASE_URL="${DATABASE_URL}" \
             ghcr.io/suraj7026/drive-api:${IMAGE_TAG} ./migrate up
+
+          if docker inspect surajdrive-backend >/dev/null 2>&1; then
+            PREVIOUS_CONTAINER="surajdrive-backend-prev-$(date +%Y%m%d%H%M%S)"
+            docker rename surajdrive-backend "$PREVIOUS_CONTAINER"
+            docker stop "$PREVIOUS_CONTAINER"
+            stopped=true
+          fi
           docker compose up -d
 
           ready=false

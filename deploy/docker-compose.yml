@@ -36,7 +36,7 @@ services:
       - SECURITY_CLAMAV_ADDRESS=clamav:3310
       - SECURITY_SCAN_TIMEOUT_SECS=300
       - SECURITY_SCAN_WORKERS=2
-      - NOTIFICATIONS_ENABLED=true
+      - NOTIFICATIONS_ENABLED=false
       - NOTIFICATIONS_FROM_NAME=Suraj Drive
       - NOTIFICATIONS_PUBLIC_URL=https://drive.sudarshanrajagopalan.one
       - NOTIFICATIONS_TIMEOUT_SECS=30

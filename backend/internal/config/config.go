@@ -236,14 +236,13 @@ func (c *Config) validate() error {
 		if !c.Security.MalwareScanEnabled {
 			return fmt.Errorf("security.malware_scan_enabled must be true in production")
 		}
-		if !c.Notifications.Enabled {
-			return fmt.Errorf("notifications.enabled must be true in production")
-		}
-		if c.Notifications.AllowPlaintext {
-			return fmt.Errorf("plaintext SMTP is forbidden in production")
-		}
-		if !strings.HasPrefix(strings.ToLower(c.Notifications.PublicURL), "https://") {
-			return fmt.Errorf("notifications.public_url must use HTTPS in production")
+		if c.Notifications.Enabled {
+			if c.Notifications.AllowPlaintext {
+				return fmt.Errorf("plaintext SMTP is forbidden in production")
+			}
+			if !strings.HasPrefix(strings.ToLower(c.Notifications.PublicURL), "https://") {
+				return fmt.Errorf("notifications.public_url must use HTTPS in production")
+			}
 		}
 		if len(c.JWT.Secret) < 32 || strings.Contains(strings.ToLower(c.JWT.Secret), "replace-with") {
 			return fmt.Errorf("jwt.secret must be a non-placeholder value of at least 32 characters in production")

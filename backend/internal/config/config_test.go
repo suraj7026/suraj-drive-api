@@ -72,7 +72,7 @@ func TestValidateRequiresMalwareScanningInProduction(t *testing.T) {
 	}
 }
 
-func TestValidateRequiresNotificationDeliveryInProduction(t *testing.T) {
+func TestValidateAllowsProductionWithoutNotificationDelivery(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.Server.IsProd = true
 	cfg.Server.FrontendURL = "https://drive.example.com"
@@ -81,8 +81,8 @@ func TestValidateRequiresNotificationDeliveryInProduction(t *testing.T) {
 	cfg.MinIO.UseSSL = true
 	cfg.Security.MalwareScanEnabled = true
 	cfg.Security.ClamAVAddress = "clamav:3310"
-	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "notifications.enabled") {
-		t.Fatalf("expected production notification delivery validation error, got %v", err)
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("production configuration without mail delivery failed: %v", err)
 	}
 }
 
