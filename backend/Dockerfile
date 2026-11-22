@@ -3,7 +3,8 @@ WORKDIR /app
 
 # libvips (with libheif transitively) is required by govips for HEIC -> JPEG
 # preview conversion. build-base supplies the C toolchain CGO needs.
-RUN apk --no-cache add build-base vips-dev
+RUN sed -i 's|dl-cdn.alpinelinux.org|mirror.freedif.org|g' /etc/apk/repositories \
+ && apk --no-cache add build-base vips-dev
 
 COPY go.mod go.sum ./
 RUN go mod download
@@ -14,7 +15,8 @@ RUN CGO_ENABLED=1 GOOS=linux go build -o migrate ./cmd/migrate
 
 FROM alpine:3.23
 # Runtime: libvips itself (not -dev), plus certs/tz for normal HTTP/clock work.
-RUN apk --no-cache add ca-certificates tzdata vips \
+RUN sed -i 's|dl-cdn.alpinelinux.org|mirror.freedif.org|g' /etc/apk/repositories \
+ && apk --no-cache add ca-certificates tzdata vips \
  && addgroup -S -g 10001 drive \
  && adduser -S -D -H -u 10001 -G drive drive
 WORKDIR /app
