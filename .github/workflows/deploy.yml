@@ -29,11 +29,6 @@ jobs:
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REDIRECT_URL: ${{ secrets.GOOGLE_REDIRECT_URL }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DATABASE_MIGRATION_URL: ${{ secrets.DATABASE_MIGRATION_URL }}
-          SMTP_ADDRESS: ${{ secrets.SMTP_ADDRESS }}
-          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          SMTP_FROM_ADDRESS: ${{ secrets.SMTP_FROM_ADDRESS }}
           CLAMAV_IMAGE: ${{ vars.CLAMAV_IMAGE }}
         run: |
           set -Eeuo pipefail
@@ -41,8 +36,7 @@ jobs:
           for name in \
             JWT_SECRET MINIO_ACCESS_KEY MINIO_SECRET_KEY \
             GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GOOGLE_REDIRECT_URL \
-            DATABASE_URL DATABASE_MIGRATION_URL \
-            SMTP_ADDRESS SMTP_USERNAME SMTP_PASSWORD SMTP_FROM_ADDRESS \
+            DATABASE_URL \
             CLAMAV_IMAGE; do
             if [ -z "${!name:-}" ]; then
               missing+=("$name")
