@@ -1,6 +1,6 @@
 module surajdrive/backend
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/davidbyttow/govips/v2 v2.18.0
